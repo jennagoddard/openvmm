@@ -396,7 +396,7 @@ impl Options {
         let serial_wait_for_rts = parse_legacy_env_bool("OPENHCL_SERIAL_WAIT_FOR_RTS");
         let nvme_vfio = parse_legacy_env_bool("OPENHCL_NVME_VFIO");
         let hide_isolation = parse_env_bool("OPENHCL_HIDE_ISOLATION");
-        let halt_on_guest_halt = parse_legacy_env_bool("OPENHCL_HALT_ON_GUEST_HALT");
+        let halt_on_guest_halt = true;
         let no_sidecar_hotplug = parse_legacy_env_bool("OPENHCL_NO_SIDECAR_HOTPLUG");
         let gdbstub = parse_legacy_env_bool("OPENHCL_GDBSTUB");
         let gdbstub_port = parse_legacy_env_number("OPENHCL_GDBSTUB_PORT")?.map(|x| x as u32);

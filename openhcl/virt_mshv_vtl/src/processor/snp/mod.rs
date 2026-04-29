@@ -153,7 +153,9 @@ struct ExitStats {
     xsetbv: Counter,
     excp_db: Counter,
     secure_reg_write: Counter,
+    #[cfg(not(feature = "debug_disable_secure_avic"))]
     avic_no_accel: Counter,
+    #[cfg(not(feature = "debug_disable_secure_avic"))]
     avic_incomplete_ipi: Counter,
 }
 
@@ -511,6 +513,9 @@ impl SnpBackedShared {
         let sev_status =
             SevStatusMsr::from(msr.read_msr(x86defs::X86X_AMD_MSR_SEV).expect("read msr"));
         tracing::info!(CVM_ALLOWED, ?sev_status, "SEV status");
+        #[cfg(feature = "debug_disable_secure_avic")]
+        let secure_avic = false;
+        #[cfg(not(feature = "debug_disable_secure_avic"))]
         let secure_avic = sev_status.secure_avic();
 
         // Configure timer interface for lower VTLs.
@@ -628,14 +633,16 @@ impl BackingPrivate for SnpBacked {
             .set_vp_registers_hvcall(Vtl::Vtl0, values)
             .expect("set_vp_registers hypercall for direct overlays should succeed");
 
-        let using_secure_avic = this
-            .runner
-            .vmsa(GuestVtl::Vtl0)
-            .sev_features()
-            .secure_avic();
-        tracing::debug!(?using_secure_avic, "Using secure AVIC for VTL0");
+        #[cfg(not(feature = "debug_disable_secure_avic"))]
+        {
+            let using_secure_avic = this
+                .runner
+                .vmsa(GuestVtl::Vtl0)
+                .sev_features()
+                .secure_avic();
+            tracing::debug!(?using_secure_avic, "Using secure AVIC for VTL0");
 
-        if using_secure_avic {
+            if using_secure_avic {
             let vtl0_avic_pfn = this.runner.secure_avic_vtl0_pfn(this.inner.cpu_index);
             let mut vmsa = this.runner.vmsa_mut(GuestVtl::Vtl0);
             let savic_ctrl = vmsa
@@ -644,25 +651,26 @@ impl BackingPrivate for SnpBacked {
                 .with_guest_apic_backing_page_ptr(vtl0_avic_pfn);
             *(vmsa.secure_avic_control_mut()) = savic_ctrl;
 
-            this.set_apic_offload(GuestVtl::Vtl0, true);
+                this.set_apic_offload(GuestVtl::Vtl0, true);
 
-            this.runner
-                .set_vp_register(
-                    GuestVtl::Vtl0,
-                    HvX64RegisterName::SevAvicGpa,
-                    savic_ctrl.into_bits().into(),
-                )
-                .expect("set_vp_register hypercall for SAVIC GPA should succeed");
+                this.runner
+                    .set_vp_register(
+                        GuestVtl::Vtl0,
+                        HvX64RegisterName::SevAvicGpa,
+                        savic_ctrl.into_bits().into(),
+                    )
+                    .expect("set_vp_register hypercall for SAVIC GPA should succeed");
+            }
+
+            // No secure AVIC for VTL 1.
+            assert!(
+                !this
+                    .runner
+                    .vmsa(GuestVtl::Vtl1)
+                    .sev_features()
+                    .secure_avic()
+            );
         }
-
-        // No secure AVIC for VTL 1.
-        assert!(
-            !this
-                .runner
-                .vmsa(GuestVtl::Vtl1)
-                .sev_features()
-                .secure_avic()
-        );
         this.set_apic_offload(GuestVtl::Vtl1, false);
     }
 
@@ -908,12 +916,17 @@ fn init_vmsa(
 
     // Configure the interrupt injection mode. Secure AVIC and alternate injection
     // are mutually exclusive (AMD PPR 15.36.16, 15.36.21).
-    if vtl == GuestVtl::Vtl0 && sev_status.secure_avic() {
-        vmsa.sev_features_mut().set_secure_avic(true);
-        vmsa.sev_features_mut().set_guest_intercept_control(true);
-    } else {
-        vmsa.sev_features_mut().set_alternate_injection(true);
+    #[cfg(not(feature = "debug_disable_secure_avic"))]
+    {
+        if vtl == GuestVtl::Vtl0 && sev_status.secure_avic() {
+            vmsa.sev_features_mut().set_secure_avic(true);
+            vmsa.sev_features_mut().set_guest_intercept_control(true);
+        } else {
+            vmsa.sev_features_mut().set_alternate_injection(true);
+        }
     }
+    // When debug_disable_secure_avic is enabled, all acceleration modes are disabled.
+    // The guest will use standard interrupt injection without any acceleration.
     vmsa.v_intr_cntrl_mut().set_guest_busy(true);
     // Note: The VMSA pages for VTL0 and VTL1 are converted to a VMSA page
     // in the RMP by the kernel, in mshv_configure_vmsa_page. The VTL2 VMSA
@@ -1873,6 +1886,7 @@ impl UhProcessor<'_, SnpBacked> {
                 &mut self.backing.exit_stats[entered_from_vtl].secure_reg_write
             }
 
+            #[cfg(not(feature = "debug_disable_secure_avic"))]
             SevExitCode::AVIC_NOACCEL => {
                 let no_accel_info = SevAvicNoAccelInfo::from(vmsa.exit_info1());
                 tracing::debug!("AVIC no acceleration SEV exit: {no_accel_info:x?}");
@@ -1974,6 +1988,7 @@ impl UhProcessor<'_, SnpBacked> {
                 &mut self.backing.exit_stats[entered_from_vtl].avic_no_accel
             }
 
+            #[cfg(not(feature = "debug_disable_secure_avic"))]
             SevExitCode::AVIC_INCOMPLETE_IPI => {
                 let ipi_info1 = SevAvicIncompleteIpiInfo1::from(vmsa.exit_info1());
                 let ipi_info2 = SevAvicIncompleteIpiInfo2::from(vmsa.exit_info2());
@@ -1995,6 +2010,17 @@ impl UhProcessor<'_, SnpBacked> {
                 self.handle_msr_access(dev, entered_from_vtl, msr, is_write, is_fault);
 
                 &mut self.backing.exit_stats[entered_from_vtl].avic_incomplete_ipi
+            }
+
+            #[cfg(feature = "debug_disable_secure_avic")]
+            SevExitCode::AVIC_NOACCEL | SevExitCode::AVIC_INCOMPLETE_IPI => {
+                // These exit codes should never occur when debug_disable_secure_avic is enabled,
+                // as all acceleration modes are disabled.
+                tracing::error!(
+                    CVM_CONFIDENTIAL,
+                    "Unexpected AVIC exit code {sev_error_code:x?} with debug_disable_secure_avic enabled"
+                );
+                &mut self.backing.exit_stats[entered_from_vtl].vmmcall
             }
 
             _ => {

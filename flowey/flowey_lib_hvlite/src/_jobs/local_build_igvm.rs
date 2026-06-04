@@ -33,7 +33,6 @@ pub struct Customizations {
     pub custom_sidecar: Option<PathBuf>,
     pub custom_vtl0_kernel: Option<PathBuf>,
     pub custom_extra_rootfs: Vec<PathBuf>,
-    pub disable_secure_avic: bool,
     pub override_arch: Option<CommonArch>,
     pub override_kernel_pkg: Option<OpenhclKernelPackage>,
     pub override_manifest: Option<PathBuf>,
@@ -95,7 +94,6 @@ impl SimpleFlowNode for Node {
             override_kernel_pkg,
             override_openvmm_hcl_feature,
             override_max_trace_level,
-            disable_secure_avic,
             with_debuginfo,
             with_mi_secure,
             with_perf_tools,
@@ -108,10 +106,6 @@ impl SimpleFlowNode for Node {
                 "You are building a debug binary with a release configuration.\n\
                 The produced binary likely will not function properly due to memory restrictions."
             )
-        }
-
-        if disable_secure_avic && (release_cfg || release) {
-            anyhow::bail!("--disable-secure-avic cannot be used with release builds.");
         }
 
         let build_profile = if release {
@@ -253,7 +247,6 @@ impl SimpleFlowNode for Node {
             recipe: OpenhclIgvmRecipe::LocalOnlyCustom(recipe_details),
             custom_target: None,
             extra_features: BTreeSet::new(),
-            disable_secure_avic,
             built_openvmm_hcl: write_built_openvmm_hcl,
             built_openhcl_boot: write_built_openhcl_boot,
             built_openhcl_igvm: write_built_openhcl_igvm,

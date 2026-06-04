@@ -97,7 +97,6 @@ pub enum CpuidResultsIsolationType<'a> {
         cpuid_pages: &'a [u8],
         access_vsm: bool,
         vtom: u64,
-        secure_avic: bool,
     },
     Tdx {
         topology: &'a ProcessorTopology<X86Topology>,
@@ -215,13 +214,12 @@ impl CpuidResults {
                 cpuid_pages,
                 access_vsm,
                 vtom,
-                secure_avic,
             } => {
                 assert!(
                     cpuid_pages.len() % size_of::<HvPspCpuidPage>() == 0 && !cpuid_pages.is_empty()
                 );
 
-                snp_init = SnpCpuidInitializer::new(cpuid_pages, access_vsm, vtom, secure_avic);
+                snp_init = SnpCpuidInitializer::new(cpuid_pages, access_vsm, vtom);
                 &snp_init as &dyn CpuidArchInitializer
             }
             CpuidResultsIsolationType::Tdx {

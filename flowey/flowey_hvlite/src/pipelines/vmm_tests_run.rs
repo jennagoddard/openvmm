@@ -103,12 +103,6 @@ pub struct VmmTestsRunCli {
     /// Use when making changes to prep_steps
     #[clap(long)]
     no_reuse_prepped_vhds: bool,
-
-    /// Disable secure AVIC support for SNP. This adds the
-    /// `disable_secure_avic` cargo feature and sets `secure_avic` to
-    /// `disabled` in the IGVM manifest.
-    #[clap(long)]
-    pub disable_secure_avic: bool,
 }
 
 struct CargoNextestListRequest<'a> {
@@ -164,7 +158,6 @@ impl IntoPipeline for VmmTestsRunCli {
             custom_uefi_firmware,
             ci_profile,
             no_reuse_prepped_vhds,
-            disable_secure_avic,
         } = self;
 
         let target = resolve_target(target, backend_hint)?;
@@ -357,7 +350,6 @@ impl IntoPipeline for VmmTestsRunCli {
                         flowey_lib_hvlite::run_cargo_nextest_run::NextestProfile::Default
                     },
                     reuse_prepped_vhds: !no_reuse_prepped_vhds,
-                    disable_secure_avic,
                     done: ctx.new_done_handle(),
                 }
             });

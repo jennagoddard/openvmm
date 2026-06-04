@@ -51,7 +51,6 @@ fn extended_state_enumeration_wrong_page() {
         cpuid_pages: pages.as_slice().as_bytes(),
         access_vsm: false,
         vtom: 0x80000000,
-        secure_avic: false,
     }
     .build()
     .unwrap();
@@ -169,7 +168,6 @@ fn real_xfem() {
         cpuid_pages: pages.as_slice().as_bytes(),
         access_vsm: false,
         vtom: 0x80000000,
-        secure_avic: false,
     }
     .build()
     .unwrap();
@@ -343,7 +341,6 @@ fn run_fake_xfem_test(
         cpuid_pages: pages.as_slice().as_bytes(),
         access_vsm: false,
         vtom: 0x80000000,
-        secure_avic: false,
     }
     .build()
     .unwrap();
@@ -951,7 +948,6 @@ fn xfem_bounds() {
         cpuid_pages: pages.as_slice().as_bytes(),
         access_vsm: false,
         vtom: 0x80000000,
-        secure_avic: false,
     }
     .build()
     .unwrap();
@@ -1048,7 +1044,6 @@ fn xfem_missing_subleaf0() {
             cpuid_pages: pages.as_slice().as_bytes(),
             access_vsm: false,
             vtom: 0x80000000,
-            secure_avic: false,
         }
         .build(),
         Err(CpuidResultsError::MissingRequiredResult(
@@ -1099,7 +1094,6 @@ fn xfem_missing_subleaf1() {
             cpuid_pages: pages.as_slice().as_bytes(),
             access_vsm: false,
             vtom: 0x80000000,
-            secure_avic: false,
         }
         .build(),
         Err(CpuidResultsError::MissingRequiredResult(
@@ -1164,7 +1158,6 @@ fn xfem_missing_additional_subleaf() {
             cpuid_pages: pages.as_slice().as_bytes(),
             access_vsm: false,
             vtom: 0x80000000,
-            secure_avic: false,
         }
         .build(),
         Err(CpuidResultsError::MissingRequiredResult(
@@ -1232,7 +1225,6 @@ fn xfem_missing_support() {
         cpuid_pages: pages.as_slice().as_bytes(),
         access_vsm: false,
         vtom: 0x80000000,
-        secure_avic: false,
     }
     .build()
     .unwrap();

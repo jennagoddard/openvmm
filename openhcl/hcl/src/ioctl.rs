@@ -75,10 +75,9 @@ use std::sync::atomic::Ordering;
 use thiserror::Error;
 use user_driver::DmaClient;
 use user_driver::memory::MemoryBlock;
-use x86defs::snp::SevAvicPage;
 use x86defs::snp::SevVmsa;
 use x86defs::tdx::TdCallResultCode;
-use x86defs::vmx::VmxApicPage;
+use x86defs::vmx::ApicPage;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::Immutable;
@@ -108,8 +107,8 @@ pub enum Error {
     MmapVp(#[source] io::Error, Option<Vtl>),
     #[error("failed to set the poll file")]
     SetPollFile(#[source] nix::Error),
-    #[error("failed to check hcl capabilities {0}")]
-    CheckExtensions(u32, #[source] nix::Error),
+    #[error("failed to check hcl capabilities")]
+    CheckExtensions(#[source] nix::Error),
     #[error("failed to mmap the register page")]
     MmapRegPage(#[source] io::Error),
     #[error("failed to create vtl")]
@@ -371,7 +370,6 @@ pub(crate) mod ioctls {
     const MSHV_TLBSYNC: u16 = 0x37;
     const MSHV_KICKCPUS: u16 = 0x38;
     const MSHV_MAP_REDIRECTED_DEVICE_INTERRUPT: u16 = 0x39;
-    const MSHV_VTL_SECURE_AVIC_VTL0_PFN: u16 = 0x40;
     const MSHV_VTL_REALM_CONFIG: u16 = 0x41;
     const MSHV_VTL_RSI_SYSREG_READ: u16 = 0x42;
     const MSHV_VTL_RSI_SYSREG_WRITE: u16 = 0x43;
@@ -571,13 +569,6 @@ pub(crate) mod ioctls {
         u64
     );
 
-    ioctl_readwrite!(
-        hcl_read_secure_avic_vtl0_pfn,
-        MSHV_IOCTL,
-        MSHV_VTL_SECURE_AVIC_VTL0_PFN,
-        u64
-    );
-
     pub const HCL_CAP_REGISTER_PAGE: u32 = 1;
     pub const HCL_CAP_VTL_RETURN_ACTION: u32 = 2;
     pub const HCL_CAP_DR6_SHARED: u32 = 3;
@@ -727,8 +718,7 @@ impl Mshv {
     fn check_extension(&self, cap: u32) -> Result<bool, Error> {
         // SAFETY: calling IOCTL as documented, with no special requirements.
         let supported = unsafe {
-            hcl_check_extension(self.file.as_raw_fd(), &cap)
-                .map_err(|e| Error::CheckExtensions(cap, e))?
+            hcl_check_extension(self.file.as_raw_fd(), &cap).map_err(Error::CheckExtensions)?
         };
         Ok(supported != 0)
     }
@@ -1457,12 +1447,9 @@ enum BackingState {
     },
     Snp {
         vmsa: VtlArray<MappedPage<SevVmsa>, 2>,
-        vtl0_apic_page: MappedPage<SevAvicPage>,
-        /// VTL1 runs with the alternate interrupt injection.
-        vtl1_apic_page: MemoryBlock,
     },
     Tdx {
-        vtl0_apic_page: MappedPage<VmxApicPage>,
+        vtl0_apic_page: MappedPage<ApicPage>,
         vtl1_apic_page: MemoryBlock,
     },
     Cca {
@@ -1529,12 +1516,6 @@ impl HclVp {
                     .map_err(|e| Error::MmapVp(e, Some(Vtl::Vtl1)))?;
                 BackingState::Snp {
                     vmsa: [vmsa_vtl0, vmsa_vtl1].into(),
-                    vtl0_apic_page: MappedPage::new(fd, MSHV_APIC_PAGE_OFFSET | vp as i64)
-                        .map_err(|e| Error::MmapVp(e, Some(Vtl::Vtl0)))?,
-                    vtl1_apic_page: private_dma_client
-                        .ok_or(Error::MissingPrivateMemory)?
-                        .allocate_dma_buffer(HV_PAGE_SIZE as usize)
-                        .map_err(Error::AllocVp)?,
                 }
             }
             IsolationType::Tdx => BackingState::Tdx {
@@ -2461,27 +2442,6 @@ impl Hcl {
         }
 
         vp_pfn
-    }
-
-    /// Gets the PFN for the VTL 0 secure AVIC.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the Secure AVIC VTL 0 page was not mapped (i.e., Secure AVIC
-    /// is not enabled). Callers must ensure Secure AVIC is enabled before
-    /// calling this method.
-    pub fn secure_avic_vtl0_pfn(&self, cpu_index: u32) -> u64 {
-        let mut savic_pfn = cpu_index as u64; // input vp, output pfn
-
-        // SAFETY: The ioctl requires no prerequisites other than the Secure AVIC VTL 0
-        // should be mapped. This ioctl should never fail as long as the VTL 0
-        // Secure AVIC was mapped.
-        unsafe {
-            hcl_read_secure_avic_vtl0_pfn(self.mshv_vtl.file.as_raw_fd(), &mut savic_pfn)
-                .expect("should always succeed");
-        }
-
-        savic_pfn
     }
 
     /// Returns the isolation type for the partition.

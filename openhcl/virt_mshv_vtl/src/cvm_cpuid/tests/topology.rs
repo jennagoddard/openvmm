@@ -54,7 +54,6 @@ fn real_topology() {
         cpuid_pages: pages.as_slice().as_bytes(),
         access_vsm: false,
         vtom: 0x80000000,
-        secure_avic: false,
     })
     .unwrap();
 
@@ -162,7 +161,6 @@ fn initialize_topology(
         cpuid_pages: pages.as_slice().as_bytes(),
         access_vsm: false,
         vtom: 0x80000000,
-        secure_avic: false,
     }
     .build()
 }

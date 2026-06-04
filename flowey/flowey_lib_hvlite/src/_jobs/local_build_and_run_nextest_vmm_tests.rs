@@ -86,8 +86,6 @@ flowey_request! {
 
         pub reuse_prepped_vhds: bool,
 
-        pub disable_secure_avic: bool,
-
         pub done: WriteVar<SideEffect>,
     }
 }
@@ -137,7 +135,6 @@ impl SimpleFlowNode for Node {
             skip_vhd_prompt,
             nextest_profile,
             reuse_prepped_vhds,
-            disable_secure_avic,
             done,
         } = request;
 
@@ -253,7 +250,6 @@ impl SimpleFlowNode for Node {
                     recipe: recipe_to_use,
                     custom_target: None,
                     extra_features: BTreeSet::new(),
-                    disable_secure_avic,
                     built_openvmm_hcl,
                     built_openhcl_boot,
                     built_openhcl_igvm,

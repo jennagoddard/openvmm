@@ -8,7 +8,6 @@ rust-version.workspace = true
 
 [features]
 gdb = []
-disable_secure_avic = []
 
 [target.'cfg(target_os = "linux")'.dependencies]
 hcl.workspace = true

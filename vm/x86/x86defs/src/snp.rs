@@ -3,7 +3,6 @@
 
 //! AMD SEV-SNP specific definitions.
 
-use crate::ApicRegisterValue;
 use crate::X64_PAGE_SIZE;
 use bitfield_struct::bitfield;
 use zerocopy::FromBytes;

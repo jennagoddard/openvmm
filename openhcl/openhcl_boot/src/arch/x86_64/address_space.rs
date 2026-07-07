@@ -326,3 +326,78 @@ pub fn tdx_unshare_large_page(va: TdxHypercallPage) {
         entry.tdx_set_private();
     }
 }
+
+/// Attempt to clear the confidential (C) bit in the PDE covering `va`, for use
+/// in the crash path on SNP. Returns false if the page table walk fails (entry
+/// not present or not a large page).
+///
+/// # Safety
+///
+/// The caller must ensure that making this 2MB region non-confidential is safe
+/// (e.g., code and stack are in a different 2MB page).
+pub(super) unsafe fn try_clear_confidential_bit_for_crash(va: u64) -> bool {
+    let mut page_table_base: u64;
+
+    // SAFETY: Reading CR3 and walking page tables. The caller guarantees that
+    // making this page non-confidential is safe.
+    unsafe {
+        asm!("mov {0}, cr3", out(reg) page_table_base);
+        let pml4 = page_table_at_address(page_table_base);
+        let entry = pml4.entry(va, 3);
+        if !entry.is_present() {
+            return false;
+        }
+        let pdpt = page_table_at_address(entry.get_addr());
+        let entry = pdpt.entry(va, 2);
+        if !entry.is_present() {
+            return false;
+        }
+        let pd = page_table_at_address(entry.get_addr());
+        let pde = pd.entry(va, 1);
+        if !pde.is_present() || !pde.is_large_page() {
+            return false;
+        }
+        // Clear the confidential (C) bit.
+        let val = pde.read_pte() & !X64_PTE_CONFIDENTIAL;
+        pde.write_pte(val);
+        // Flush TLB to pick up the PDE change.
+        asm!("mov {0}, cr3", "mov cr3, {0}", out(reg) _, options(nostack));
+    }
+    true
+}
+
+/// Attempt to set the TDX shared bit in the PDE covering `va`, for use in the
+/// crash path on TDX. Returns false if the page table walk fails.
+///
+/// # Safety
+///
+/// The caller must ensure that making this 2MB region shared is safe (e.g.,
+/// code and stack are in a different 2MB page).
+pub(super) unsafe fn try_set_shared_bit_for_crash(va: u64) -> bool {
+    let mut page_table_base: u64;
+
+    // SAFETY: Reading CR3 and walking page tables. The caller guarantees that
+    // making this page shared is safe.
+    unsafe {
+        asm!("mov {0}, cr3", out(reg) page_table_base);
+        let pml4 = page_table_at_address(page_table_base);
+        let entry = pml4.entry(va, 3);
+        if !entry.is_present() {
+            return false;
+        }
+        let pdpt = page_table_at_address(entry.get_addr());
+        let entry = pdpt.entry(va, 2);
+        if !entry.is_present() {
+            return false;
+        }
+        let pd = page_table_at_address(entry.get_addr());
+        let pde = pd.entry(va, 1);
+        if !pde.is_present() || !pde.is_large_page() {
+            return false;
+        }
+        pde.tdx_set_shared();
+        // Flush TLB to pick up the PDE change.
+        asm!("mov {0}, cr3", "mov cr3, {0}", out(reg) _, options(nostack));
+    }
+    true
+}

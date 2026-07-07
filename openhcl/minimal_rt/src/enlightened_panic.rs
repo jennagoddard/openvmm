@@ -20,7 +20,12 @@ const PRE_OS_ID: u8 = 5;
 
 static CAN_REPORT_MSG: AtomicBool = AtomicBool::new(false);
 
-fn report_raw(tag: [u8; 8], msg: &[u8], msg_pa: Option<usize>) {
+/// Reports a crash with a pre-formatted message buffer at a known physical
+/// address.
+///
+/// This is useful when the caller has already placed the message in a
+/// specific location (e.g. a shared page for hardware-isolated VMs).
+pub fn report_raw(tag: [u8; 8], msg: &[u8], msg_pa: Option<usize>) {
     // Before using the guest crash MSRs, could check
     // if these are supported. Here, we don't do that
     // as the intention is to fault anyways.

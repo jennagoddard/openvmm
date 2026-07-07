@@ -556,16 +556,45 @@ fn get_ref_time(isolation: IsolationType) -> Option<u64> {
 }
 
 fn shim_main(shim_params_raw_offset: isize) -> ! {
+    // Enable enlightened panic message reporting as the very first thing, before
+    // anything that could panic. The boot shim runs before any secrets are
+    // available, so there is no confidentiality concern with exposing crash
+    // messages. For non-isolated VMs, the hypervisor can read the message buffer
+    // from the stack directly. For isolated VMs, the panic handler will
+    // additionally try to make the crash page shared.
+    enable_enlightened_panic();
+
     let p = shim_parameters(shim_params_raw_offset);
-    if p.isolation_type == IsolationType::None {
-        enable_enlightened_panic();
-    }
+
+    // Initialize crash reporting state for the panic handler. For
+    // hardware-isolated VMs (SNP/TDX), this stores the isolation type and crash
+    // page address so the panic handler can make the page shared and write a
+    // readable crash message. Use the first page of the log buffer as the crash
+    // page since it is in a separate memory region from the boot shim
+    // code/stack (allocated by the IGVM builder).
+    let crash_page_pa = if p.isolation_type.is_hardware_isolated() && !p.log_buffer.is_empty() {
+        p.log_buffer.start()
+    } else {
+        0
+    };
+    rt::init_crash_reporting(p.isolation_type, crash_page_pa);
 
     #[cfg(feature = "cvm_boot_log")]
     arch::initialize_serial_io(&p);
 
-    // Enable the in-memory log.
-    boot_logger_memory_init(p.log_buffer);
+    // Enable the in-memory log. If we reserved the first page for crash
+    // reporting, start the log buffer after it.
+    let log_buffer_range = if crash_page_pa != 0 && p.log_buffer.len() > hvdef::HV_PAGE_SIZE {
+        memory_range::MemoryRange::new(
+            p.log_buffer.start() + hvdef::HV_PAGE_SIZE..p.log_buffer.end(),
+        )
+    } else if crash_page_pa != 0 {
+        // Log buffer is only one page; it's used for crash reporting.
+        memory_range::MemoryRange::EMPTY
+    } else {
+        p.log_buffer
+    };
+    boot_logger_memory_init(log_buffer_range);
 
     // Enable global log crate.
     log::set_logger(&boot_logger::BOOT_LOGGER).unwrap();

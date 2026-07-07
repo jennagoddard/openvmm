@@ -155,6 +155,26 @@ pub fn change_page_visibility(range: MemoryRange, host_visible: bool) {
     }
 }
 
+/// Best-effort attempt to make a page range shared for crash reporting.
+///
+/// This performs the full sequence: MAP_GPA (shared), set the shared bit in
+/// the PDE, and flush the TLB. Unlike [`change_page_visibility`], this does
+/// not panic on failure — it returns false instead.
+///
+/// # Safety
+///
+/// The caller must ensure that the 2MB region containing the range does not
+/// overlap with code or stack.
+pub unsafe fn try_make_page_shared_for_crash(range: MemoryRange) -> bool {
+    if tdcall_map_gpa(&mut TdcallInstruction, range, true).is_err() {
+        return false;
+    }
+
+    // Set the shared bit in the PDE and flush TLB.
+    // SAFETY: Caller guarantees the 2MB region is safe to share.
+    unsafe { super::address_space::try_set_shared_bit_for_crash(range.start()) }
+}
+
 /// Tdcall based io port access.
 #[cfg(feature = "cvm_boot_log")]
 pub struct TdxIoAccess;

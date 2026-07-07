@@ -106,7 +106,11 @@ pub struct ShimParams {
     /// Memory used by the shim.
     pub used: MemoryRange,
     pub bounce_buffer: Option<MemoryRange>,
-    /// Log buffer region used by the shim.
+    /// Crash page for the shim panic handler on hardware-isolated VMs. First
+    /// page of the loader-imported log region; empty if the loader did not
+    /// reserve one.
+    pub crash_page: MemoryRange,
+    /// Log buffer region used by the shim, excluding the crash page.
     pub log_buffer: MemoryRange,
     /// Memory to be used for the heap.
     pub heap: MemoryRange,
@@ -160,6 +164,19 @@ impl ShimParams {
             MemoryRange::new(base..base + log_buffer_size)
         };
 
+        // The loader reserves one 4K page at the start of the log buffer
+        // region as a crash page for the shim's panic handler. Split it off
+        // if the region is at least two pages. Older loaders that only
+        // provided a smaller region get an empty crash page.
+        let (crash_page, log_buffer) = if log_buffer.len() > hvdef::HV_PAGE_SIZE {
+            (
+                MemoryRange::new(log_buffer.start()..log_buffer.start() + hvdef::HV_PAGE_SIZE),
+                MemoryRange::new(log_buffer.start() + hvdef::HV_PAGE_SIZE..log_buffer.end()),
+            )
+        } else {
+            (MemoryRange::EMPTY, log_buffer)
+        };
+
         let heap = {
             let base = shim_base_address.wrapping_add_signed(heap_start_offset);
             MemoryRange::new(base..base + heap_size)
@@ -192,6 +209,7 @@ impl ShimParams {
                     ..shim_base_address.wrapping_add_signed(used_end),
             ),
             bounce_buffer,
+            crash_page,
             log_buffer,
             heap,
             persisted_state,

@@ -336,32 +336,15 @@ pub fn tdx_unshare_large_page(va: TdxHypercallPage) {
 /// The caller must ensure that making this 2MB region non-confidential is safe
 /// (e.g., code and stack are in a different 2MB page).
 pub(super) unsafe fn try_clear_confidential_bit_for_crash(va: u64) -> bool {
-    let mut page_table_base: u64;
-
-    // SAFETY: Reading CR3 and walking page tables. The caller guarantees that
-    // making this page non-confidential is safe.
+    // SAFETY: The caller guarantees that clearing the C-bit on this PDE will
+    // not affect currently executing code or the stack.
     unsafe {
-        asm!("mov {0}, cr3", out(reg) page_table_base);
-        let pml4 = page_table_at_address(page_table_base);
-        let entry = pml4.entry(va, 3);
-        if !entry.is_present() {
+        let Some(pde) = try_get_leaf_2mb_pde(va) else {
             return false;
-        }
-        let pdpt = page_table_at_address(entry.get_addr());
-        let entry = pdpt.entry(va, 2);
-        if !entry.is_present() {
-            return false;
-        }
-        let pd = page_table_at_address(entry.get_addr());
-        let pde = pd.entry(va, 1);
-        if !pde.is_present() || !pde.is_large_page() {
-            return false;
-        }
-        // Clear the confidential (C) bit.
+        };
         let val = pde.read_pte() & !X64_PTE_CONFIDENTIAL;
         pde.write_pte(val);
-        // Flush TLB to pick up the PDE change.
-        asm!("mov {0}, cr3", "mov cr3, {0}", out(reg) _, options(nostack));
+        flush_tlb_all();
     }
     true
 }
@@ -374,30 +357,59 @@ pub(super) unsafe fn try_clear_confidential_bit_for_crash(va: u64) -> bool {
 /// The caller must ensure that making this 2MB region shared is safe (e.g.,
 /// code and stack are in a different 2MB page).
 pub(super) unsafe fn try_set_shared_bit_for_crash(va: u64) -> bool {
-    let mut page_table_base: u64;
+    // SAFETY: The caller guarantees that setting the shared bit on this PDE
+    // will not affect currently executing code or the stack.
+    unsafe {
+        let Some(pde) = try_get_leaf_2mb_pde(va) else {
+            return false;
+        };
+        pde.tdx_set_shared();
+        flush_tlb_all();
+    }
+    true
+}
 
-    // SAFETY: Reading CR3 and walking page tables. The caller guarantees that
-    // making this page shared is safe.
+/// Walk the current page tables and return the leaf 2MB PDE that maps `va`,
+/// or `None` if the walk fails (entry not present or not a large page).
+///
+/// # Safety
+///
+/// The caller must ensure the returned PDE is not aliased with any other
+/// mutable reference and that the paging hierarchy is well-formed.
+unsafe fn try_get_leaf_2mb_pde(va: u64) -> Option<&'static mut PageTableEntry> {
+    let mut page_table_base: u64;
+    // SAFETY: Reading CR3 is safe. The caller guarantees the paging hierarchy
+    // is well-formed.
     unsafe {
         asm!("mov {0}, cr3", out(reg) page_table_base);
         let pml4 = page_table_at_address(page_table_base);
         let entry = pml4.entry(va, 3);
         if !entry.is_present() {
-            return false;
+            return None;
         }
         let pdpt = page_table_at_address(entry.get_addr());
         let entry = pdpt.entry(va, 2);
         if !entry.is_present() {
-            return false;
+            return None;
         }
         let pd = page_table_at_address(entry.get_addr());
         let pde = pd.entry(va, 1);
         if !pde.is_present() || !pde.is_large_page() {
-            return false;
+            return None;
         }
-        pde.tdx_set_shared();
-        // Flush TLB to pick up the PDE change.
+        Some(pde)
+    }
+}
+
+/// Flush the TLB by reloading CR3.
+///
+/// # Safety
+///
+/// Caller must ensure that reloading CR3 with its current value is safe
+/// (paging is enabled and CR3 references a valid page table hierarchy).
+unsafe fn flush_tlb_all() {
+    // SAFETY: See doc comment.
+    unsafe {
         asm!("mov {0}, cr3", "mov cr3, {0}", out(reg) _, options(nostack));
     }
-    true
 }

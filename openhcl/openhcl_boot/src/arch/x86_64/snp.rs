@@ -516,6 +516,56 @@ impl Ghcb {
             );
         }
     }
+
+    /// Best-effort attempt to make a 2MB-aligned region containing `page_va`
+    /// shared for crash reporting.
+    ///
+    /// This performs the full sequence: pvalidate (unaccept), GHCB page state
+    /// change, clear the C-bit in the PDE, and flush the TLB. Unlike
+    /// [`Self::change_page_visibility`], this function does not panic on
+    /// failure — it returns false instead.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that the 2MB region containing `page_va` does
+    /// not overlap with code or stack (i.e., making it non-confidential will
+    /// not affect execution).
+    pub unsafe fn try_make_page_shared_for_crash(page_va: u64) -> bool {
+        let page_number = page_va / X64_PAGE_SIZE;
+
+        // Try to pvalidate (unaccept) the page. Try 4K first, then 2MB if
+        // size mismatch occurs (the RMP entry might be at 2MB granularity).
+        let pvalidate_ok = match pvalidate(page_number, page_va, false, false) {
+            Ok(_) => true,
+            Err(_) => {
+                // Try 2MB: align down to 2MB boundary.
+                let large_va = page_va & !(x86defs::X64_LARGE_PAGE_SIZE - 1);
+                let large_page_number = large_va / X64_PAGE_SIZE;
+                pvalidate(large_page_number, large_va, true, false).is_ok()
+            }
+        };
+
+        if !pvalidate_ok {
+            return false;
+        }
+
+        // Request the hypervisor to mark the page as shared in the RMP.
+        let resp = Self::ghcb_call(GhcbCall {
+            info: GhcbInfo::PAGE_STATE_CHANGE,
+            extra_data: x86defs::snp::GHCB_DATA_PAGE_STATE_SHARED,
+            page_number,
+        });
+
+        if resp.into_bits() != GhcbInfo::PAGE_STATE_UPDATED.0 {
+            return false;
+        }
+
+        // Clear the C-bit in the PDE and flush TLB so writes go to shared
+        // memory.
+        // SAFETY: Caller guarantees the 2MB region is safe to make
+        // non-confidential.
+        unsafe { super::address_space::try_clear_confidential_bit_for_crash(page_va) }
+    }
 }
 
 /// GHCB page-based protocol methods for serial logging support.

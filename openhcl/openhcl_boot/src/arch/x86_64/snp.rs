@@ -517,32 +517,37 @@ impl Ghcb {
         }
     }
 
-    /// Best-effort attempt to make a 2MB-aligned region containing `page_va`
-    /// shared for crash reporting.
+    /// Best-effort attempt to make the 4K page containing `page_va` shared for
+    /// crash reporting.
     ///
-    /// This performs the full sequence: pvalidate (unaccept), GHCB page state
-    /// change, clear the C-bit in the PDE, and flush the TLB. Unlike
-    /// [`Self::change_page_visibility`], this function does not panic on
-    /// failure — it returns false instead.
+    /// Performs pvalidate (unaccept), GHCB page state change, clears the C-bit
+    /// in the PDE, and flushes the TLB. Unlike [`Self::change_page_visibility`],
+    /// this function does not panic on failure — it returns false instead.
     ///
     /// # Safety
     ///
     /// The caller must ensure that the 2MB region containing `page_va` does
-    /// not overlap with code or stack (i.e., making it non-confidential will
-    /// not affect execution).
+    /// not overlap with code or stack: clearing the C-bit is done at PDE
+    /// granularity, so every 4K page in the surrounding 2MB region will
+    /// suddenly point at shared memory even though only `page_va` has been
+    /// PSC'd. Accessing any of those other pages after this call faults.
     pub unsafe fn try_make_page_shared_for_crash(page_va: u64) -> bool {
         let page_number = page_va / X64_PAGE_SIZE;
 
-        // Try to pvalidate (unaccept) the page. Try 4K first, then 2MB if
-        // size mismatch occurs (the RMP entry might be at 2MB granularity).
+        // Unaccept the page. pvalidate returns `Ok(Retry)` (not `Err`) on
+        // SEV_FAIL_SIZEMISMATCH, which indicates the RMP entry is at 2MB
+        // granularity and we need to unaccept the whole 2MB region.
         let pvalidate_ok = match pvalidate(page_number, page_va, false, false) {
-            Ok(_) => true,
-            Err(_) => {
-                // Try 2MB: align down to 2MB boundary.
+            Ok(AcceptGpaStatus::Success) => true,
+            Ok(AcceptGpaStatus::Retry) => {
                 let large_va = page_va & !(x86defs::X64_LARGE_PAGE_SIZE - 1);
                 let large_page_number = large_va / X64_PAGE_SIZE;
-                pvalidate(large_page_number, large_va, true, false).is_ok()
+                matches!(
+                    pvalidate(large_page_number, large_va, true, false),
+                    Ok(AcceptGpaStatus::Success)
+                )
             }
+            Err(_) => false,
         };
 
         if !pvalidate_ok {
@@ -560,8 +565,6 @@ impl Ghcb {
             return false;
         }
 
-        // Clear the C-bit in the PDE and flush TLB so writes go to shared
-        // memory.
         // SAFETY: Caller guarantees the 2MB region is safe to make
         // non-confidential.
         unsafe { super::address_space::try_clear_confidential_bit_for_crash(page_va) }

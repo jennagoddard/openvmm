@@ -378,9 +378,13 @@ where
 
     tracing::debug!(parameter_region_start);
 
-    // Reserve 8K for the bootshim log buffer. Import these pages so they are
+    // Reserve 12K for the bootshim log buffer region: one 4K crash page
+    // followed by 8K of log pages. The crash page is used by the boot shim's
+    // panic handler on hardware-isolated VMs to share a readable panic
+    // message with the host; the shim splits the imported region into a
+    // crash page and a log buffer at runtime. Import these pages so they are
     // available early without extra acceptance calls.
-    let bootshim_log_size = HV_PAGE_SIZE * 2;
+    let bootshim_log_size = HV_PAGE_SIZE * 3;
     let bootshim_log_start = offset;
     offset += bootshim_log_size;
 
@@ -1125,8 +1129,10 @@ where
 
     tracing::debug!(parameter_region_start);
 
-    // Reserve 8K for the bootshim log buffer.
-    let bootshim_log_size = HV_PAGE_SIZE * 2;
+    // Reserve 12K for the bootshim log buffer region: one 4K crash page
+    // followed by 8K of log pages. The crash page is unused on aarch64 today
+    // but kept for layout parity with x86_64.
+    let bootshim_log_size = HV_PAGE_SIZE * 3;
     let bootshim_log_start = next_addr;
     next_addr += bootshim_log_size;
 

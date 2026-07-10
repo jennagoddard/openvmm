@@ -73,80 +73,101 @@ core::arch::global_asm! {
     STACK_SIZE = const crate::rt::STACK_SIZE,
 }
 
-/// Attempt to make a crash page shared and report a crash with a message
-/// that the hypervisor can read.
+/// Attempt to write an [`HclErrorInformationPage`] describing the panic to
+/// the HCL error information page so VMWP's triple-fault handler can surface
+/// the message via `MSVM_HCL_CRASH_REPORT`.
 ///
-/// This is used in the panic handler for hardware-isolated (SNP/TDX) VMs.
-/// The crash page must be identity-mapped and in a different 2MB PDE from
-/// the currently executing code and stack, because the page-table update
-/// clears the C/shared bit at PDE granularity.
+/// For hardware-isolated (SNP/TDX) VMs the page must first be made shared with
+/// the hypervisor. Because clearing the C/shared bit happens at PDE (2 MB)
+/// granularity, the info page must live in a different 2 MB region from the
+/// currently executing code and stack. If either share the info page's PDE
+/// this function bails out.
 ///
-/// Returns `true` if the crash was successfully reported with a readable
-/// message. Returns `false` if sharing failed (caller should fall back to
-/// reporting without a message).
+/// Returns `true` on success (the caller should triple-fault). Returns
+/// `false` if the sharing dance failed or the page cannot be safely
+/// modified; the caller should fall back to reporting via the guest crash
+/// MSRs so the host learns *something*.
 #[cfg_attr(not(minimal_rt), expect(dead_code))]
-pub fn try_report_crash_hw_isolated(
+pub fn try_write_error_info_page(
     isolation_type: IsolationType,
-    crash_page_va: u64,
+    info_page_va: u64,
     panic: &core::panic::PanicInfo<'_>,
 ) -> bool {
     use core::fmt::Write;
+    use loader_defs::hcl::HCL_ERROR_INFORMATION_STRING_SIZE;
+    use loader_defs::hcl::HCL_ERROR_PAGE_DATA_VERSION_1;
+    use loader_defs::hcl::HCL_TRIPLEFAULT_SIGNATURE;
+    use loader_defs::hcl::HclErrorInformationPage;
+    use loader_defs::hcl::HclErrorPageData;
+    use zerocopy::IntoBytes;
 
-    // Guard against the crash page sharing its 2MB PDE with our code or
-    // stack. If it did, clearing the C-bit on the whole PDE would fault the
-    // very code we're running.
-    const LARGE_PAGE_MASK: u64 = !(x86defs::X64_LARGE_PAGE_SIZE - 1);
-    let crash_2mb = crash_page_va & LARGE_PAGE_MASK;
+    if isolation_type.is_hardware_isolated() {
+        // Guard against the info page sharing its 2 MB PDE with our code or
+        // stack. If it did, flipping the C-bit on the whole PDE would fault
+        // the very code we are running.
+        const LARGE_PAGE_MASK: u64 = !(x86defs::X64_LARGE_PAGE_SIZE - 1);
+        let info_2mb = info_page_va & LARGE_PAGE_MASK;
 
-    let code_addr: u64;
-    // SAFETY: Reading RIP via a RIP-relative LEA to determine which 2MB page
-    // the currently executing code is in.
-    unsafe {
-        core::arch::asm!("lea {}, [rip]", out(reg) code_addr, options(nostack, nomem));
-    }
-    if (code_addr & LARGE_PAGE_MASK) == crash_2mb {
-        return false;
-    }
-
-    let stack_va: u64;
-    // SAFETY: Reading RSP to determine which 2MB page the stack is in.
-    unsafe {
-        core::arch::asm!("mov {}, rsp", out(reg) stack_va, options(nostack, nomem));
-    }
-    if (stack_va & LARGE_PAGE_MASK) == crash_2mb {
-        return false;
-    }
-
-    let shared = match isolation_type {
-        // SAFETY: We verified the crash page is in a different 2MB PDE from
-        // our code and stack, so modifying the PDE won't affect execution.
-        IsolationType::Snp => unsafe { snp::Ghcb::try_make_page_shared_for_crash(crash_page_va) },
-        IsolationType::Tdx => {
-            let range =
-                memory_range::MemoryRange::new(crash_page_va..crash_page_va + hvdef::HV_PAGE_SIZE);
-            // SAFETY: Same PDE-isolation guarantee as above.
-            unsafe { tdx::try_make_page_shared_for_crash(range) }
+        let code_addr: u64;
+        // SAFETY: RIP-relative LEA to determine which 2 MB region the
+        // currently executing code is in.
+        unsafe {
+            core::arch::asm!("lea {}, [rip]", out(reg) code_addr, options(nostack, nomem));
         }
-        _ => return false,
-    };
+        if (code_addr & LARGE_PAGE_MASK) == info_2mb {
+            return false;
+        }
 
-    if !shared {
-        return false;
+        let stack_va: u64;
+        // SAFETY: Reading RSP to determine which 2 MB region the stack is in.
+        unsafe {
+            core::arch::asm!("mov {}, rsp", out(reg) stack_va, options(nostack, nomem));
+        }
+        if (stack_va & LARGE_PAGE_MASK) == info_2mb {
+            return false;
+        }
+
+        let shared = match isolation_type {
+            // SAFETY: We verified the info page is in a different 2 MB PDE
+            // from our code and stack, so modifying the PDE won't affect
+            // execution.
+            IsolationType::Snp => unsafe {
+                snp::Ghcb::try_make_page_shared_for_crash(info_page_va)
+            },
+            IsolationType::Tdx => {
+                let range =
+                    memory_range::MemoryRange::new(info_page_va..info_page_va + hvdef::HV_PAGE_SIZE);
+                // SAFETY: Same PDE-isolation guarantee as above.
+                unsafe { tdx::try_make_page_shared_for_crash(range) }
+            }
+            _ => return false,
+        };
+
+        if !shared {
+            return false;
+        }
     }
 
-    // Page contents are undefined after sharing; format the panic message
-    // straight into the shared page.
-    // SAFETY: crash_page_va is identity-mapped, page-aligned, and now shared.
-    let crash_buf = unsafe {
-        core::slice::from_raw_parts_mut(crash_page_va as *mut u8, hvdef::HV_PAGE_SIZE as usize)
+    // Build the error information page on the stack, then copy it into the
+    // (now host-readable) info page.
+    let mut info = HclErrorInformationPage {
+        stop_code: 0,
+        parameter1: 0,
+        parameter2: 0,
+        parameter3: 0,
+        parameter4: 0,
+        signature: HCL_TRIPLEFAULT_SIGNATURE,
+        data: HclErrorPageData {
+            version: HCL_ERROR_PAGE_DATA_VERSION_1,
+            message: [0; HCL_ERROR_INFORMATION_STRING_SIZE],
+        },
     };
-    crash_buf.fill(0);
 
-    struct CrashBufWriter<'a> {
+    struct MessageWriter<'a> {
         buf: &'a mut [u8],
         pos: usize,
     }
-    impl Write for CrashBufWriter<'_> {
+    impl Write for MessageWriter<'_> {
         fn write_str(&mut self, s: &str) -> core::fmt::Result {
             let bytes = s.as_bytes();
             let remaining = self.buf.len() - self.pos;
@@ -157,19 +178,22 @@ pub fn try_report_crash_hw_isolated(
         }
     }
 
-    let mut writer = CrashBufWriter {
-        buf: crash_buf,
+    // Reserve the last byte for null termination.
+    let mut writer = MessageWriter {
+        buf: &mut info.data.message[..HCL_ERROR_INFORMATION_STRING_SIZE - 1],
         pos: 0,
     };
     let _ = write!(writer, "{}", panic);
-    let len = writer.pos;
 
-    // The crash page is identity-mapped, so VA == PA.
-    minimal_rt::enlightened_panic::report_raw(
-        *b"OHCLBOOT",
-        &writer.buf[..len],
-        Some(crash_page_va as usize),
-    );
+    // SAFETY: info_page_va is identity-mapped, page-aligned, and (for
+    // hardware-isolated VMs) has been shared with the hypervisor above. For
+    // non-hardware-isolated VMs the page is directly writable.
+    let dest = unsafe {
+        core::slice::from_raw_parts_mut(info_page_va as *mut u8, hvdef::HV_PAGE_SIZE as usize)
+    };
+    dest.fill(0);
+    let bytes = info.as_bytes();
+    dest[..bytes.len()].copy_from_slice(bytes);
 
     true
 }

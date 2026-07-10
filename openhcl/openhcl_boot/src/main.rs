@@ -563,12 +563,12 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
 
     let p = shim_parameters(shim_params_raw_offset);
 
-    // Wire up crash reporting for the panic handler on hardware-isolated VMs.
-    // The dedicated crash page carved out of the log buffer region lets the
-    // panic handler share the message with the hypervisor without corrupting
-    // the log buffer that underhill_core reads back as a StringBuffer.
-    if p.isolation_type.is_hardware_isolated() && !p.crash_page.is_empty() {
-        rt::init_crash_reporting(p.isolation_type, p.crash_page.start());
+    // Wire up the HCL error information page for the panic handler. VMWP
+    // consumes this page on triple fault and surfaces the embedded message
+    // via MSVM_HCL_CRASH_REPORT; on hardware-isolated VMs the panic handler
+    // shares the page with the hypervisor as part of writing to it.
+    if !p.error_info_page.is_empty() {
+        rt::init_error_info_page(p.isolation_type, p.error_info_page.start());
     }
 
     #[cfg(feature = "cvm_boot_log")]

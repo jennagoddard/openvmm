@@ -65,6 +65,10 @@ pub struct ShimParamsRaw {
     pub persisted_state_region_offset: i64,
     /// The size of the supported persisted state region.
     pub persisted_state_region_size: u64,
+    /// The offset to the HCL error information page (page 1 of the
+    /// [`HCL_ERROR_RANGE_PAGE_COUNT`](crate::hcl::HCL_ERROR_RANGE_PAGE_COUNT)-page
+    /// error range). Zero if the loader did not reserve an error range.
+    pub error_info_page_offset: i64,
 }
 
 open_enum! {

@@ -378,13 +378,9 @@ where
 
     tracing::debug!(parameter_region_start);
 
-    // Reserve 12K for the bootshim log buffer region: one 4K crash page
-    // followed by 8K of log pages. The crash page is used by the boot shim's
-    // panic handler on hardware-isolated VMs to share a readable panic
-    // message with the host; the shim splits the imported region into a
-    // crash page and a log buffer at runtime. Import these pages so they are
+    // Reserve 8K for the bootshim log buffer. Import these pages so they are
     // available early without extra acceptance calls.
-    let bootshim_log_size = HV_PAGE_SIZE * 3;
+    let bootshim_log_size = HV_PAGE_SIZE * 2;
     let bootshim_log_start = offset;
     offset += bootshim_log_size;
 
@@ -395,6 +391,25 @@ where
         BootPageAcceptance::Exclusive,
         &[],
     )?;
+
+    // Reserve an HCL error range: page 0 is the doorbell page and page 1 is
+    // the error information page consumed by VMWP on triple fault. Emitted as
+    // an ErrorRange acceptance so the IGVM file carries an
+    // IGVM_VHS_ERROR_RANGE directive that VMWP uses to locate the info page.
+    let bootshim_error_range_size =
+        HV_PAGE_SIZE * loader_defs::hcl::HCL_ERROR_RANGE_PAGE_COUNT;
+    let bootshim_error_range_start = offset;
+    offset += bootshim_error_range_size;
+
+    importer.import_pages(
+        bootshim_error_range_start / HV_PAGE_SIZE,
+        bootshim_error_range_size / HV_PAGE_SIZE,
+        "ohcl-boot-shim-error-range",
+        BootPageAcceptance::ErrorPage,
+        &[],
+    )?;
+
+    let bootshim_error_info_page_start = bootshim_error_range_start + HV_PAGE_SIZE;
 
     // Reserve 16 pages for a bootshim heap. This is only used to parse the
     // protobuf payload from the previous instance in a servicing boot.
@@ -570,6 +585,7 @@ where
         heap_size,
         persisted_state_region_offset: calculate_shim_offset(persisted_region_base),
         persisted_state_region_size: persisted_region_size,
+        error_info_page_offset: calculate_shim_offset(bootshim_error_info_page_start),
     };
 
     tracing::debug!(boot_params_base, "shim gpa");
@@ -1129,10 +1145,8 @@ where
 
     tracing::debug!(parameter_region_start);
 
-    // Reserve 12K for the bootshim log buffer region: one 4K crash page
-    // followed by 8K of log pages. The crash page is unused on aarch64 today
-    // but kept for layout parity with x86_64.
-    let bootshim_log_size = HV_PAGE_SIZE * 3;
+    // Reserve 8K for the bootshim log buffer.
+    let bootshim_log_size = HV_PAGE_SIZE * 2;
     let bootshim_log_start = next_addr;
     next_addr += bootshim_log_size;
 
@@ -1143,6 +1157,23 @@ where
         BootPageAcceptance::Exclusive,
         &[],
     )?;
+
+    // Reserve an HCL error range for parity with the x86_64 layout. Not used
+    // by the aarch64 panic handler today (no hardware-isolated aarch64 VMs).
+    let bootshim_error_range_size =
+        HV_PAGE_SIZE * loader_defs::hcl::HCL_ERROR_RANGE_PAGE_COUNT;
+    let bootshim_error_range_start = next_addr;
+    next_addr += bootshim_error_range_size;
+
+    importer.import_pages(
+        bootshim_error_range_start / HV_PAGE_SIZE,
+        bootshim_error_range_size / HV_PAGE_SIZE,
+        "ohcl-boot-shim-error-range",
+        BootPageAcceptance::ErrorPage,
+        &[],
+    )?;
+
+    let bootshim_error_info_page_start = bootshim_error_range_start + HV_PAGE_SIZE;
 
     // Reserve 16 pages for a bootshim heap. This is only used to parse the
     // protobuf payload from the previous instance in a servicing boot.
@@ -1215,6 +1246,7 @@ where
         heap_size,
         persisted_state_region_offset: calculate_shim_offset(persisted_region_base),
         persisted_state_region_size: persisted_region_size,
+        error_info_page_offset: calculate_shim_offset(bootshim_error_info_page_start),
     };
 
     importer

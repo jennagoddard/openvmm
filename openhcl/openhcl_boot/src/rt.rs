@@ -16,18 +16,20 @@ pub struct Stack([u8; STACK_SIZE]);
 
 pub static mut STACK: Stack = Stack([0; STACK_SIZE]);
 
-/// Crash reporting state consumed by the panic handler on hardware-isolated
-/// VMs. `None` means the panic handler will fall back to the standard
-/// enlightened-panic path with no shared crash page.
-static CRASH_INFO: SingleThreaded<Cell<Option<(IsolationType, u64)>>> =
+/// Location of the HCL error information page (identity-mapped VA). `None`
+/// means either no page was reserved by the loader or the panic handler
+/// should not attempt to use it; in that case the handler falls back to the
+/// standard enlightened-panic MSR path.
+static ERROR_INFO_PAGE: SingleThreaded<Cell<Option<(IsolationType, u64)>>> =
     SingleThreaded(Cell::new(None));
 
-/// Register a crash page that the panic handler can share with the hypervisor.
+/// Register the HCL error information page used by the panic handler to
+/// report crashes to VMWP via the [`IGVM_VHS_ERROR_RANGE`] contract.
 ///
-/// Must be called before anything that could panic. Only meaningful for
-/// hardware-isolated VMs; other isolation types can skip calling this.
-pub fn init_crash_reporting(isolation_type: IsolationType, crash_page_pa: u64) {
-    CRASH_INFO.set(Some((isolation_type, crash_page_pa)));
+/// Must be called before anything that could panic. `info_page_va` is
+/// identity-mapped so VA == PA.
+pub fn init_error_info_page(isolation_type: IsolationType, info_page_va: u64) {
+    ERROR_INFO_PAGE.set(Some((isolation_type, info_page_va)));
 }
 
 /// Validate the stack cookie is still present. Panics if overwritten.
@@ -69,18 +71,17 @@ mod instead_of_builtins {
     fn panic(panic: &core::panic::PanicInfo<'_>) -> ! {
         log::error!("{panic}");
 
-        // For hardware-isolated VMs (SNP/TDX), try to make the crash page
-        // shared so the hypervisor can read the panic message. The boot shim
-        // has no secrets, so this is safe.
+        // Try to publish the panic via the HCL error information page. On
+        // success VMWP surfaces the message via MSVM_HCL_CRASH_REPORT when the
+        // subsequent triple fault is caught; on failure fall back to the guest
+        // crash MSRs so the host still sees *something*.
         #[cfg(target_arch = "x86_64")]
-        if let Some((isolation_type, crash_page)) = CRASH_INFO.get() {
-            if crate::arch::try_report_crash_hw_isolated(isolation_type, crash_page, panic) {
+        if let Some((isolation_type, info_page)) = ERROR_INFO_PAGE.get() {
+            if crate::arch::try_write_error_info_page(isolation_type, info_page, panic) {
                 minimal_rt::arch::fault();
             }
         }
 
-        // Fall back to standard enlightened panic (works for non-isolated VMs,
-        // or if sharing failed for isolated VMs).
         // The stack is identity mapped.
         minimal_rt::enlightened_panic::report(*b"OHCLBOOT", panic, |va| Some(va as usize));
         minimal_rt::arch::fault();

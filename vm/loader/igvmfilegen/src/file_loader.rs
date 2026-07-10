@@ -868,6 +868,18 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
                     SevVmsa::read_from_bytes(padded.as_slice()).expect("should be correct size"),
                 ), // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
             });
+        } else if acceptance == BootPageAcceptance::ErrorPage {
+            // Error ranges are emitted as a single IGVM_VHS_ERROR_RANGE directive
+            // (not per-page PageData). VMWP parses this directive to locate the
+            // error information page and consumes its contents on triple fault.
+            if !data.is_empty() {
+                anyhow::bail!("error range must not carry any initial data");
+            }
+            self.directives.push(IgvmDirectiveHeader::ErrorRange {
+                gpa: page_base * PAGE_SIZE_4K,
+                compatibility_mask: DEFAULT_COMPATIBILITY_MASK,
+                size_bytes: (page_count * PAGE_SIZE_4K) as u32,
+            });
         } else {
             for page in page_base..page_base + page_count {
                 let (data_type, flags) = match acceptance {
@@ -878,7 +890,6 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
                         IgvmPageDataType::NORMAL,
                         IgvmPageDataFlags::new().with_unmeasured(true),
                     ),
-                    BootPageAcceptance::ErrorPage => todo!(),
                     BootPageAcceptance::SecretsPage => {
                         (IgvmPageDataType::SECRETS, IgvmPageDataFlags::new())
                     }
@@ -889,6 +900,7 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
                         (IgvmPageDataType::CPUID_XF, IgvmPageDataFlags::new())
                     }
                     BootPageAcceptance::VpContext => unreachable!(),
+                    BootPageAcceptance::ErrorPage => unreachable!(),
                     BootPageAcceptance::Shared => (
                         IgvmPageDataType::NORMAL,
                         IgvmPageDataFlags::new().with_shared(true),

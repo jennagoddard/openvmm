@@ -106,12 +106,12 @@ pub struct ShimParams {
     /// Memory used by the shim.
     pub used: MemoryRange,
     pub bounce_buffer: Option<MemoryRange>,
-    /// Crash page for the shim panic handler on hardware-isolated VMs. First
-    /// page of the loader-imported log region; empty if the loader did not
-    /// reserve one.
-    pub crash_page: MemoryRange,
-    /// Log buffer region used by the shim, excluding the crash page.
+    /// Log buffer region used by the shim.
     pub log_buffer: MemoryRange,
+    /// HCL error information page (single 4K page) that the panic handler
+    /// writes on hardware-isolated VMs so VMWP's triple-fault handler can
+    /// surface the panic message. Empty if the loader did not reserve one.
+    pub error_info_page: MemoryRange,
     /// Memory to be used for the heap.
     pub heap: MemoryRange,
     /// Memory region for persisted state.
@@ -148,6 +148,7 @@ impl ShimParams {
             heap_size,
             persisted_state_region_offset,
             persisted_state_region_size,
+            error_info_page_offset,
         } = raw;
 
         let isolation_type = get_isolation_type(supported_isolation_type);
@@ -164,17 +165,14 @@ impl ShimParams {
             MemoryRange::new(base..base + log_buffer_size)
         };
 
-        // The loader reserves one 4K page at the start of the log buffer
-        // region as a crash page for the shim's panic handler. Split it off
-        // if the region is at least two pages. Older loaders that only
-        // provided a smaller region get an empty crash page.
-        let (crash_page, log_buffer) = if log_buffer.len() > hvdef::HV_PAGE_SIZE {
-            (
-                MemoryRange::new(log_buffer.start()..log_buffer.start() + hvdef::HV_PAGE_SIZE),
-                MemoryRange::new(log_buffer.start() + hvdef::HV_PAGE_SIZE..log_buffer.end()),
-            )
+        // The loader reserves a two-page HCL error range; the shim only cares
+        // about page 1, the information page. `error_info_page_offset == 0`
+        // indicates an older loader that did not reserve an error range.
+        let error_info_page = if error_info_page_offset == 0 {
+            MemoryRange::EMPTY
         } else {
-            (MemoryRange::EMPTY, log_buffer)
+            let base = shim_base_address.wrapping_add_signed(error_info_page_offset);
+            MemoryRange::new(base..base + hvdef::HV_PAGE_SIZE)
         };
 
         let heap = {
@@ -209,8 +207,8 @@ impl ShimParams {
                     ..shim_base_address.wrapping_add_signed(used_end),
             ),
             bounce_buffer,
-            crash_page,
             log_buffer,
+            error_info_page,
             heap,
             persisted_state,
         }

@@ -129,7 +129,26 @@ pub fn generate_snp_measurement(
         }
 
         match header {
-            IgvmDirectiveHeader::ErrorRange { .. } => todo!("error range not implemented"),
+            IgvmDirectiveHeader::ErrorRange {
+                gpa,
+                compatibility_mask,
+                size_bytes,
+            } => {
+                assert_eq!(
+                    compatibility_mask & snp_compatibility_mask,
+                    snp_compatibility_mask
+                );
+                // The error range is unmeasured (host-writable). Fold each 4K
+                // page into the launch digest as UNMEASURED so the range
+                // contributes to the measurement in a stable, contents-agnostic
+                // way.
+                let mut page_gpa = *gpa;
+                let end_gpa = gpa + *size_bytes as u64;
+                while page_gpa < end_gpa {
+                    measure_page(SnpPageType::UNMEASURED, page_gpa, None);
+                    page_gpa += PAGE_SIZE_4K;
+                }
+            }
             IgvmDirectiveHeader::ParameterArea {
                 number_of_bytes,
                 parameter_area_index,

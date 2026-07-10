@@ -1189,8 +1189,27 @@ fn load_igvm_x86(
                     ParameterAreaState::Inserted => panic!("igvmfile is invalid, multiple insert"),
                 }
             }
-            IgvmDirectiveHeader::ErrorRange { .. } => {
-                todo!("Error Range not supported")
+            IgvmDirectiveHeader::ErrorRange {
+                gpa,
+                compatibility_mask: _,
+                size_bytes,
+            } => {
+                // Preserve order of import page calls.
+                page_data.flush(&mut loader)?;
+
+                debug_assert!(gpa.is_multiple_of(HV_PAGE_SIZE));
+                debug_assert!((size_bytes as u64).is_multiple_of(HV_PAGE_SIZE));
+
+                let base_gpa = relocate_gpa(gpa);
+                loader
+                    .import_pages(
+                        base_gpa / HV_PAGE_SIZE,
+                        size_bytes as u64 / HV_PAGE_SIZE,
+                        "igvm-error-range",
+                        BootPageAcceptance::ExclusiveUnmeasured,
+                        &[],
+                    )
+                    .map_err(Error::Loader)?;
             }
             IgvmDirectiveHeader::X64NativeVpContext { .. } => {
                 todo!("native vp context not supported")

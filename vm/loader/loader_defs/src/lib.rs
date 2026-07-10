@@ -6,6 +6,7 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+pub mod hcl;
 pub mod linux;
 pub mod paravisor;
 pub mod shim;

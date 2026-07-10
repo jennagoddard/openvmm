@@ -78,11 +78,13 @@ impl<R> Loader<'_, R> {
                     BootPageAcceptance::Exclusive => PageVisibility::Exclusive,
                     BootPageAcceptance::ExclusiveUnmeasured => PageVisibility::Exclusive,
                     BootPageAcceptance::Shared => PageVisibility::Shared,
+                    // Error range pages are host-writable but not shared; treat
+                    // them like ExclusiveUnmeasured for acceptance purposes.
+                    BootPageAcceptance::ErrorPage => PageVisibility::Exclusive,
                     // TODO: These are required for hardware isolation but
                     // support for that doesn't exist in any virt backend yet.
                     // Handling these will require more virt::generic types.
                     BootPageAcceptance::VpContext => todo!(),
-                    BootPageAcceptance::ErrorPage => todo!(),
                     BootPageAcceptance::SecretsPage => todo!(),
                     BootPageAcceptance::CpuidPage => todo!(),
                     BootPageAcceptance::CpuidExtendedStatePage => todo!(),

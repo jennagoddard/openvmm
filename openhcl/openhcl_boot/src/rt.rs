@@ -48,6 +48,10 @@ mod instead_of_builtins {
     #[panic_handler]
     fn panic(panic: &core::panic::PanicInfo<'_>) -> ! {
         log::error!("{panic}");
+        // Best-effort: flush in-memory log to serial in case the runtime
+        // logger was never initialized (e.g., panic during early boot before
+        // device tree parsing completes).
+        crate::boot_logger::boot_logger_panic_flush();
         // The stack is identity mapped.
         minimal_rt::enlightened_panic::report(*b"OHCLBOOT", panic, |va| Some(va as usize));
         minimal_rt::arch::fault();

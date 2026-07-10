@@ -567,6 +567,10 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     // Enable the in-memory log.
     boot_logger_memory_init(p.log_buffer);
 
+    // Store isolation type so the panic handler can flush logs to serial
+    // even if boot_logger_runtime_init was never called.
+    boot_logger::boot_logger_set_isolation_type(p.isolation_type);
+
     // Enable global log crate.
     log::set_logger(&boot_logger::BOOT_LOGGER).unwrap();
     // TODO: allow overriding filter at runtime

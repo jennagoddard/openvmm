@@ -1203,7 +1203,7 @@ fn load_igvm_x86(
                         base_gpa / HV_PAGE_SIZE,
                         size_bytes as u64 / HV_PAGE_SIZE,
                         "igvm-error-range",
-                        BootPageAcceptance::ExclusiveUnmeasured,
+                        BootPageAcceptance::ErrorPage,
                         &[],
                     )
                     .map_err(Error::Loader)?;

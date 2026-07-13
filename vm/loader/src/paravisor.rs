@@ -396,8 +396,7 @@ where
     // the error information page consumed by VMWP on triple fault. Emitted as
     // an ErrorRange acceptance so the IGVM file carries an
     // IGVM_VHS_ERROR_RANGE directive that VMWP uses to locate the info page.
-    let bootshim_error_range_size =
-        HV_PAGE_SIZE * loader_defs::hcl::HCL_ERROR_RANGE_PAGE_COUNT;
+    let bootshim_error_range_size = HV_PAGE_SIZE * loader_defs::hcl::HCL_ERROR_RANGE_PAGE_COUNT;
     let bootshim_error_range_start = offset;
     offset += bootshim_error_range_size;
 
@@ -1160,8 +1159,7 @@ where
 
     // Reserve an HCL error range for parity with the x86_64 layout. Not used
     // by the aarch64 panic handler today (no hardware-isolated aarch64 VMs).
-    let bootshim_error_range_size =
-        HV_PAGE_SIZE * loader_defs::hcl::HCL_ERROR_RANGE_PAGE_COUNT;
+    let bootshim_error_range_size = HV_PAGE_SIZE * loader_defs::hcl::HCL_ERROR_RANGE_PAGE_COUNT;
     let bootshim_error_range_start = next_addr;
     next_addr += bootshim_error_range_size;
 

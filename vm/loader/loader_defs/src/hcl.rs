@@ -66,6 +66,10 @@ pub struct HclErrorInformationPage {
     pub signature: u64,
     /// Versioned crash-message payload.
     pub data: HclErrorPageData,
+    /// Trailing padding to make the struct size a multiple of its 8-byte
+    /// alignment. Matches the C compiler's automatic tail padding of
+    /// `HCL_ERROR_INFORMATION_PAGE` in `HclDefs.h`. VMWP does not read this.
+    pub _reserved: [u8; 4],
 }
 
 static_assertions::const_assert_eq!(size_of::<HclErrorPageData>(), 260);

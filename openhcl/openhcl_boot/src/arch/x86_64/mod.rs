@@ -73,9 +73,9 @@ core::arch::global_asm! {
     STACK_SIZE = const crate::rt::STACK_SIZE,
 }
 
-/// Attempt to write an [`HclErrorInformationPage`] describing the panic to
-/// the HCL error information page so VMWP's triple-fault handler can surface
-/// the message via `MSVM_HCL_CRASH_REPORT`.
+/// Attempt to write an [`loader_defs::hcl::HclErrorInformationPage`]
+/// describing the panic to the HCL error information page so VMWP's
+/// triple-fault handler can surface the message via `MSVM_HCL_CRASH_REPORT`.
 ///
 /// For hardware-isolated (SNP/TDX) VMs the page must first be made shared with
 /// the hypervisor. Because clearing the C/shared bit happens at PDE (2 MB)
@@ -135,8 +135,9 @@ pub fn try_write_error_info_page(
                 snp::Ghcb::try_make_page_shared_for_crash(info_page_va)
             },
             IsolationType::Tdx => {
-                let range =
-                    memory_range::MemoryRange::new(info_page_va..info_page_va + hvdef::HV_PAGE_SIZE);
+                let range = memory_range::MemoryRange::new(
+                    info_page_va..info_page_va + hvdef::HV_PAGE_SIZE,
+                );
                 // SAFETY: Same PDE-isolation guarantee as above.
                 unsafe { tdx::try_make_page_shared_for_crash(range) }
             }
@@ -161,6 +162,7 @@ pub fn try_write_error_info_page(
             version: HCL_ERROR_PAGE_DATA_VERSION_1,
             message: [0; HCL_ERROR_INFORMATION_STRING_SIZE],
         },
+        _reserved: [0; 4],
     };
 
     struct MessageWriter<'a> {

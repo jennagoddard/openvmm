@@ -24,7 +24,7 @@ static ERROR_INFO_PAGE: SingleThreaded<Cell<Option<(IsolationType, u64)>>> =
     SingleThreaded(Cell::new(None));
 
 /// Register the HCL error information page used by the panic handler to
-/// report crashes to VMWP via the [`IGVM_VHS_ERROR_RANGE`] contract.
+/// report crashes to VMWP via the `IGVM_VHS_ERROR_RANGE` contract.
 ///
 /// Must be called before anything that could panic. `info_page_va` is
 /// identity-mapped so VA == PA.

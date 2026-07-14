@@ -77,16 +77,22 @@ core::arch::global_asm! {
 /// describing the panic to the HCL error information page so VMWP's
 /// triple-fault handler can surface the message via `MSVM_HCL_CRASH_REPORT`.
 ///
-/// For hardware-isolated (SNP/TDX) VMs the page must first be made shared with
-/// the hypervisor. Because clearing the C/shared bit happens at PDE (2 MB)
-/// granularity, the info page must live in a different 2 MB region from the
-/// currently executing code and stack. If either share the info page's PDE
-/// this function bails out.
+/// For hardware-isolated (SNP/TDX) VMs the info page's PDE has its
+/// confidential / shared bit fixed up before writing. Per VMWP's legacy
+/// `ErrorPage` contract the underlying pages are already host-owned/shared
+/// (VMWP retains host visibility for the error range and does not inject
+/// those pages via `SNP_LAUNCH_UPDATE` / into the Secure EPT), so no
+/// `pvalidate`, GHCB `PAGE_STATE_CHANGE`, or `MAP_GPA` is required —
+/// only the guest's own page-table view has to agree with the hypervisor.
+/// Because clearing/setting that PDE bit happens at 2 MB granularity, the
+/// info page must live in a different 2 MB region from the currently
+/// executing code and stack. If either shares the info page's PDE this
+/// function bails out.
 ///
 /// Returns `true` on success (the caller should triple-fault). Returns
-/// `false` if the sharing dance failed or the page cannot be safely
-/// modified; the caller should fall back to reporting via the guest crash
-/// MSRs so the host learns *something*.
+/// `false` if the PDE fix-up failed or the page cannot be safely modified;
+/// the caller should fall back to reporting via the guest crash MSRs so
+/// the host learns *something*.
 #[cfg_attr(not(minimal_rt), expect(dead_code))]
 pub fn try_write_error_info_page(
     isolation_type: IsolationType,
@@ -103,8 +109,8 @@ pub fn try_write_error_info_page(
 
     if isolation_type.is_hardware_isolated() {
         // Guard against the info page sharing its 2 MB PDE with our code or
-        // stack. If it did, flipping the C-bit on the whole PDE would fault
-        // the very code we are running.
+        // stack. If it did, flipping the C-bit / shared bit on the whole PDE
+        // would fault the very code we are running.
         const LARGE_PAGE_MASK: u64 = !(x86defs::X64_LARGE_PAGE_SIZE - 1);
         let info_2mb = info_page_va & LARGE_PAGE_MASK;
 

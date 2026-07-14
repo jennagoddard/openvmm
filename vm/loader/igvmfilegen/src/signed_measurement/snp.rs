@@ -130,25 +130,13 @@ pub fn generate_snp_measurement(
         }
 
         match header {
-            IgvmDirectiveHeader::ErrorRange {
-                gpa,
-                compatibility_mask,
-                size_bytes,
-            } => {
-                assert_eq!(
-                    compatibility_mask & snp_compatibility_mask,
-                    snp_compatibility_mask
-                );
-                // The error range is unmeasured (host-writable). Fold each 4K
-                // page into the launch digest as UNMEASURED so the range
-                // contributes to the measurement in a stable, contents-agnostic
-                // way.
-                let mut page_gpa = *gpa;
-                let end_gpa = gpa + *size_bytes as u64;
-                while page_gpa < end_gpa {
-                    measure_page(SnpPageType::UNMEASURED, page_gpa, None);
-                    page_gpa += PAGE_SIZE_4K;
-                }
+            IgvmDirectiveHeader::ErrorRange { .. } => {
+                // The error range is host-owned memory (VMWP retains host
+                // visibility for these pages and does not inject them via
+                // `SNP_LAUNCH_UPDATE`). To stay compatible with the legacy
+                // VMWP contract, do not fold ErrorRange pages into the SNP
+                // launch digest — the PSP's accumulated measurement will not
+                // include them, so the ID block digest must not either.
             }
             IgvmDirectiveHeader::ParameterArea {
                 number_of_bytes,

@@ -489,6 +489,14 @@ fn add_common_ranges<'a, I: Iterator<Item = MemoryRange>>(
     // Add the log buffer which is always present.
     builder = builder.with_log_buffer(params.log_buffer);
 
+    // Mark the HCL error range as reserved so the kernel doesn't try to use it
+    // as regular RAM. On hardware-isolated VMs the pages are host-visible per
+    // the VMWP `IGVM_VHS_ERROR_RANGE` contract, so any kernel-side access
+    // would fault. Present on all isolation types for consistency.
+    if !params.error_range.is_empty() {
+        builder = builder.with_error_range(params.error_range);
+    }
+
     if params.vtl2_reserved_region_size != 0 {
         builder = builder.with_reserved_range(MemoryRange::new(
             params.vtl2_reserved_region_start

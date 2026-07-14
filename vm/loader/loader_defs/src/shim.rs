@@ -131,6 +131,11 @@ open_enum! {
         /// This memory is used by VTL2 to store the persisted protobuf payload.
         /// This memory is marked as reserved to the kernel.
         VTL2_PERSISTED_STATE_PROTOBUF = 12,
+        /// This memory is used by VTL2 as the HCL error range (doorbell page
+        /// plus [`crate::hcl::HclErrorInformationPage`]). On hardware-isolated
+        /// VMs VMWP retains host visibility for these pages, so the kernel
+        /// must never touch them. Marked as reserved to the kernel.
+        VTL2_BOOTSHIM_ERROR_RANGE = 13,
     }
 }
 
@@ -150,6 +155,7 @@ impl MemoryVtlType {
                 | MemoryVtlType::VTL2_BOOTSHIM_LOG_BUFFER
                 | MemoryVtlType::VTL2_PERSISTED_STATE_HEADER
                 | MemoryVtlType::VTL2_PERSISTED_STATE_PROTOBUF
+                | MemoryVtlType::VTL2_BOOTSHIM_ERROR_RANGE
         )
     }
 
@@ -168,6 +174,7 @@ impl MemoryVtlType {
                 | MemoryVtlType::VTL2_BOOTSHIM_LOG_BUFFER
                 | MemoryVtlType::VTL2_PERSISTED_STATE_HEADER
                 | MemoryVtlType::VTL2_PERSISTED_STATE_PROTOBUF
+                | MemoryVtlType::VTL2_BOOTSHIM_ERROR_RANGE
         )
     }
 }

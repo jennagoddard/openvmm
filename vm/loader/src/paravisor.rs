@@ -396,6 +396,18 @@ where
     // the error information page consumed by VMWP on triple fault. Emitted as
     // an ErrorRange acceptance so the IGVM file carries an
     // IGVM_VHS_ERROR_RANGE directive that VMWP uses to locate the info page.
+    //
+    // WARNING: On hardware-isolated VMs (SNP/TDX) VMWP retains host
+    // visibility for these pages and does not inject them via
+    // `SNP_LAUNCH_UPDATE` / `TDH.MEM.PAGE.ADD`. The panic path in the boot
+    // shim flips the guest's own C-bit / shared-bit on the info page's PDE
+    // to agree, and that flip is done at 2 MB granularity. This region is
+    // followed immediately by the boot-shim heap in the same 2 MB PDE, so
+    // by construction anything in the neighboring 4 KiB pages (heap, log
+    // buffer, etc.) becomes host-visible the moment the PDE bit is flipped.
+    // The crash path is the only code that runs after that flip and it must
+    // not touch those neighboring pages. Do not add code that accesses the
+    // heap or log buffer on the panic path.
     let bootshim_error_range_size = HV_PAGE_SIZE * loader_defs::hcl::HCL_ERROR_RANGE_PAGE_COUNT;
     let bootshim_error_range_start = offset;
     offset += bootshim_error_range_size;

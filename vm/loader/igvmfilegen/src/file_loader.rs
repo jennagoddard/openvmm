@@ -757,6 +757,17 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
         // N.B. If the imported regions page grows too large, contiguous
         // regions with the same acceptance type (but different tags) could
         // be coalesced here to reduce the descriptor count.
+        //
+        // The `accepted` flag drives whether the boot shim will attempt to
+        // pvalidate/TDH.ACCEPT the region at boot. It is set for anything
+        // that is not `Shared`, including `ErrorPage`. That is
+        // intentional for `ErrorPage` on hardware-isolated VMs: VMWP retains
+        // host visibility for those pages and never injects them via
+        // `SNP_LAUNCH_UPDATE` / `TDH.MEM.PAGE.ADD`, so the shim MUST NOT try
+        // to accept them either (doing so would fault because the RMP entry
+        // is hypervisor-owned). Marking them as `accepted = true` causes the
+        // shim's acceptance loop to skip them entirely, which matches the
+        // legacy VMWP `ErrorPage` contract.
         self.accepted_ranges
             .iter()
             .map(|(r, info)| {

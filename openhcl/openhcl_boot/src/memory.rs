@@ -20,7 +20,7 @@ const PAGE_SIZE_4K: u64 = 4096;
 
 /// The maximum number of reserved memory ranges that we might use.
 /// See [`ReservedMemoryType`] definition for details.
-pub const MAX_RESERVED_MEM_RANGES: usize = 6 + sidecar_defs::MAX_NODES;
+pub const MAX_RESERVED_MEM_RANGES: usize = 7 + sidecar_defs::MAX_NODES;
 
 const MAX_MEMORY_RANGES: usize = MAX_VTL2_RAM_RANGES + MAX_RESERVED_MEM_RANGES;
 
@@ -50,6 +50,11 @@ pub enum ReservedMemoryType {
     PersistedStateHeader,
     /// Persisted state payload.
     PersistedStatePayload,
+    /// HCL error range (doorbell page plus
+    /// [`loader_defs::hcl::HclErrorInformationPage`]). On hardware-isolated
+    /// VMs VMWP retains host visibility for these pages, so the kernel must
+    /// never touch them.
+    BootshimErrorRange,
 }
 
 impl From<ReservedMemoryType> for MemoryVtlType {
@@ -66,6 +71,7 @@ impl From<ReservedMemoryType> for MemoryVtlType {
             ReservedMemoryType::PersistedStatePayload => {
                 MemoryVtlType::VTL2_PERSISTED_STATE_PROTOBUF
             }
+            ReservedMemoryType::BootshimErrorRange => MemoryVtlType::VTL2_BOOTSHIM_ERROR_RANGE,
         }
     }
 }
@@ -139,6 +145,7 @@ pub struct AddressSpaceManagerBuilder<'a, I: Iterator<Item = MemoryRange>> {
     sidecar_image: Option<MemoryRange>,
     page_tables: Option<MemoryRange>,
     log_buffer: Option<MemoryRange>,
+    error_range: Option<MemoryRange>,
     pool_ranges: ArrayVec<MemoryRange, MAX_NUMA_NODES>,
 }
 
@@ -172,6 +179,7 @@ impl<'a, I: Iterator<Item = MemoryRange>> AddressSpaceManagerBuilder<'a, I> {
             sidecar_image: None,
             page_tables: None,
             log_buffer: None,
+            error_range: None,
             pool_ranges: ArrayVec::new(),
         }
     }
@@ -191,6 +199,16 @@ impl<'a, I: Iterator<Item = MemoryRange>> AddressSpaceManagerBuilder<'a, I> {
     /// Log buffer that is reported as type [`MemoryVtlType::VTL2_BOOTSHIM_LOG_BUFFER`].
     pub fn with_log_buffer(mut self, log_buffer: MemoryRange) -> Self {
         self.log_buffer = Some(log_buffer);
+        self
+    }
+
+    /// HCL error range that is reported as type
+    /// [`MemoryVtlType::VTL2_BOOTSHIM_ERROR_RANGE`]. On hardware-isolated VMs
+    /// VMWP retains host visibility of these pages, so the kernel must never
+    /// touch them — treating the range as reserved keeps it out of the E820
+    /// map's free-RAM entries.
+    pub fn with_error_range(mut self, error_range: MemoryRange) -> Self {
+        self.error_range = Some(error_range);
         self
     }
 
@@ -220,6 +238,7 @@ impl<'a, I: Iterator<Item = MemoryRange>> AddressSpaceManagerBuilder<'a, I> {
             sidecar_image,
             page_tables,
             log_buffer,
+            error_range,
             pool_ranges,
         } = self;
 
@@ -266,6 +285,11 @@ impl<'a, I: Iterator<Item = MemoryRange>> AddressSpaceManagerBuilder<'a, I> {
             log_buffer
                 .into_iter()
                 .map(|r| (r, ReservedMemoryType::BootshimLogBuffer)),
+        );
+        reserved.extend(
+            error_range
+                .into_iter()
+                .map(|r| (r, ReservedMemoryType::BootshimErrorRange)),
         );
         reserved.sort_unstable_by_key(|(r, _)| r.start());
 

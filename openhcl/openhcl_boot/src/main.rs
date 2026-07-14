@@ -446,7 +446,8 @@ mod x86_boot {
                 | MemoryVtlType::VTL2_TDX_PAGE_TABLES
                 | MemoryVtlType::VTL2_BOOTSHIM_LOG_BUFFER
                 | MemoryVtlType::VTL2_PERSISTED_STATE_HEADER
-                | MemoryVtlType::VTL2_PERSISTED_STATE_PROTOBUF => {
+                | MemoryVtlType::VTL2_PERSISTED_STATE_PROTOBUF
+                | MemoryVtlType::VTL2_BOOTSHIM_ERROR_RANGE => {
                     add_e820_entry(entries.next(), range, E820_RESERVED)?;
                     n += 1;
                 }
@@ -567,8 +568,8 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     // consumes this page on triple fault and surfaces the embedded message
     // via MSVM_HCL_CRASH_REPORT; on hardware-isolated VMs the panic handler
     // shares the page with the hypervisor as part of writing to it.
-    if !p.error_info_page.is_empty() {
-        rt::init_error_info_page(p.isolation_type, p.error_info_page.start());
+    if let Some(info_page) = p.error_info_page_start() {
+        rt::init_error_info_page(p.isolation_type, info_page);
     }
 
     #[cfg(feature = "cvm_boot_log")]

@@ -108,10 +108,13 @@ pub struct ShimParams {
     pub bounce_buffer: Option<MemoryRange>,
     /// Log buffer region used by the shim.
     pub log_buffer: MemoryRange,
-    /// HCL error information page (single 4K page) that the panic handler
-    /// writes on hardware-isolated VMs so VMWP's triple-fault handler can
-    /// surface the panic message. Empty if the loader did not reserve one.
-    pub error_info_page: MemoryRange,
+    /// HCL error range: the doorbell page (page 0) followed by the
+    /// [`loader_defs::hcl::HclErrorInformationPage`] (page 1) that the panic
+    /// handler writes on hardware-isolated VMs so VMWP's triple-fault handler
+    /// can surface the panic message. Empty if the loader did not reserve
+    /// one. On hardware-isolated VMs VMWP retains host visibility for these
+    /// pages, so the kernel must never treat them as usable RAM.
+    pub error_range: MemoryRange,
     /// Memory to be used for the heap.
     pub heap: MemoryRange,
     /// Memory region for persisted state.
@@ -165,14 +168,19 @@ impl ShimParams {
             MemoryRange::new(base..base + log_buffer_size)
         };
 
-        // The loader reserves a two-page HCL error range; the shim only cares
-        // about page 1, the information page. `error_info_page_offset == 0`
-        // indicates an older loader that did not reserve an error range.
-        let error_info_page = if error_info_page_offset == 0 {
+        // The loader reserves a two-page HCL error range: page 0 is the
+        // doorbell and page 1 is the information page. `error_info_page_offset
+        // == 0` indicates an older loader that did not reserve an error range.
+        let error_range = if error_info_page_offset == 0 {
             MemoryRange::EMPTY
         } else {
-            let base = shim_base_address.wrapping_add_signed(error_info_page_offset);
-            MemoryRange::new(base..base + hvdef::HV_PAGE_SIZE)
+            let info_base = shim_base_address.wrapping_add_signed(error_info_page_offset);
+            let range_base = info_base - hvdef::HV_PAGE_SIZE;
+            MemoryRange::new(
+                range_base
+                    ..range_base
+                        + hvdef::HV_PAGE_SIZE * loader_defs::hcl::HCL_ERROR_RANGE_PAGE_COUNT,
+            )
         };
 
         let heap = {
@@ -208,7 +216,7 @@ impl ShimParams {
             ),
             bounce_buffer,
             log_buffer,
-            error_info_page,
+            error_range,
             heap,
             persisted_state,
         }
@@ -220,6 +228,17 @@ impl ShimParams {
         self.vtl2_reserved_region_start
             + loader_defs::paravisor::PARAVISOR_RESERVED_VTL2_SNP_SECRETS_PAGE_INDEX
                 * hvdef::HV_PAGE_SIZE
+    }
+
+    /// Base address of the [`loader_defs::hcl::HclErrorInformationPage`]
+    /// (page 1 of [`error_range`](Self::error_range)), or `None` if the
+    /// loader did not reserve an error range.
+    pub fn error_info_page_start(&self) -> Option<u64> {
+        if self.error_range.is_empty() {
+            None
+        } else {
+            Some(self.error_range.start() + hvdef::HV_PAGE_SIZE)
+        }
     }
 
     /// Get the size of the CPUID page.

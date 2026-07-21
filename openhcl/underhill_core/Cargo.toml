@@ -118,6 +118,7 @@ vmbus_serial_guest.workspace = true
 vmbus_server.workspace = true
 vpci.workspace = true
 vpci_relay.workspace = true
+vtl2_crash_page.workspace = true
 watchdog_core.workspace = true
 watchdog_vmgs_format.workspace = true
 scsi_buffers.workspace = true

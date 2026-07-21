@@ -172,6 +172,10 @@ pub struct ParsedBootDtInfo {
     /// VTL2 range for private pool memory.
     #[inspect(iter_by_index)]
     pub private_pool_ranges: Vec<MemoryRangeWithNode>,
+    /// The HCL error range reserved by the bootloader. The error information
+    /// page is at offset `HV_PAGE_SIZE` within this range. Empty if no error
+    /// range was reserved (older loader).
+    pub error_range: MemoryRange,
 
     /// GIC and platform interrupt configuration, on AArch64.
     pub gic: Option<Aarch64PlatformConfig>,
@@ -215,6 +219,8 @@ struct OpenhclInfo {
     private_pool_ranges: Vec<MemoryRangeWithNode>,
     vtl2_persisted_header: MemoryRange,
     vtl2_persisted_protobuf_region: MemoryRange,
+    /// The HCL error range reserved by the bootloader. Empty if not present.
+    error_range: MemoryRange,
 }
 
 fn parse_memory_openhcl(node: &Node<'_>) -> anyhow::Result<AddressRange> {
@@ -456,6 +462,18 @@ fn parse_openhcl(node: &Node<'_>) -> anyhow::Result<OpenhclInfo> {
         })
         .collect();
 
+    // Extract the HCL error range. There should be at most one.
+    let error_range = memory
+        .iter()
+        .find_map(|entry| {
+            if entry.vtl_usage() == MemoryVtlType::VTL2_BOOTSHIM_ERROR_RANGE {
+                Some(*entry.range())
+            } else {
+                None
+            }
+        })
+        .unwrap_or(MemoryRange::EMPTY);
+
     Ok(OpenhclInfo {
         vtl0_mmio,
         config_ranges,
@@ -468,6 +486,7 @@ fn parse_openhcl(node: &Node<'_>) -> anyhow::Result<OpenhclInfo> {
         private_pool_ranges,
         vtl2_persisted_header,
         vtl2_persisted_protobuf_region,
+        error_range,
     })
 }
 
@@ -600,6 +619,7 @@ impl ParsedBootDtInfo {
         let mut private_pool_ranges = Vec::new();
         let mut vtl2_persisted_header = MemoryRange::EMPTY;
         let mut vtl2_persisted_protobuf_region = MemoryRange::EMPTY;
+        let mut error_range = MemoryRange::EMPTY;
 
         let parser = Parser::new(raw)
             .map_err(err_to_owned)
@@ -631,6 +651,7 @@ impl ParsedBootDtInfo {
                         private_pool_ranges: n_private_pool_ranges,
                         vtl2_persisted_header: n_vtl2_persisted_header,
                         vtl2_persisted_protobuf_region: n_vtl2_persisted_protobuf_region,
+                        error_range: n_error_range,
                     } = parse_openhcl(&child)?;
                     vtl0_mmio = n_vtl0_mmio;
                     config_ranges = n_config_ranges;
@@ -643,6 +664,7 @@ impl ParsedBootDtInfo {
                     private_pool_ranges = n_private_pool_ranges;
                     vtl2_persisted_header = n_vtl2_persisted_header;
                     vtl2_persisted_protobuf_region = n_vtl2_persisted_protobuf_region;
+                    error_range = n_error_range;
                 }
 
                 _ if child.name.starts_with("memory@") => {
@@ -687,6 +709,7 @@ impl ParsedBootDtInfo {
             private_pool_ranges,
             vtl2_persisted_header,
             vtl2_persisted_protobuf_region,
+            error_range,
         })
     }
 }
@@ -1099,6 +1122,7 @@ mod tests {
             }],
             vtl2_persisted_header: MemoryRange::new(0x50000..0x51000),
             vtl2_persisted_protobuf_region: MemoryRange::new(0x51000..0x52000),
+            error_range: MemoryRange::EMPTY,
         };
 
         let dt = build_dt(&orig_info).unwrap();

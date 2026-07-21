@@ -1514,6 +1514,31 @@ async fn new_underhill_vm(
 
     let hardware_isolated = isolation.is_hardware_isolated();
 
+    // For hardware-isolated (CVM) VMs, enable panic reporting via the HCL error
+    // information page during early boot. The error page is already host-visible
+    // per the IGVM_VHS_ERROR_RANGE contract. It will be made private (hardware
+    // guarantee via SEPT/RMP) before secrets are unlocked.
+    let error_info_page_gpn = {
+        let error_range = &runtime_params.parsed_openhcl_boot().error_range;
+        if hardware_isolated && !error_range.is_empty() {
+            // The error info page is page 1 of the error range.
+            let info_page_gpa = error_range.start() + hvdef::HV_PAGE_SIZE;
+            match vtl2_crash_page::init(info_page_gpa) {
+                Ok(()) => Some(info_page_gpa / hvdef::HV_PAGE_SIZE),
+                Err(e) => {
+                    tracing::warn!(
+                        CVM_ALLOWED,
+                        error = &*e as &dyn std::error::Error,
+                        "failed to enable VTL2 error page panic hook"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    };
+
     // Temporarily override the host provided default_boot_always_attempt
     // value for non-Trusted Launch VMs until all hosts in Azure have been
     // updated to provide the correct value.
@@ -2145,6 +2170,19 @@ async fn new_underhill_vm(
     // that is passed to vTPM.
     // `agent_data` and `guest_secret_key` may also be used by vTPM
     // initialization.
+    //
+    // SECURITY: Disable the VTL2 error page BEFORE secrets are unlocked.
+    // This makes the error range pages private via hardware (SEPT/RMP),
+    // guaranteeing the host cannot read any panic data written after this point.
+    if let Some(gpn) = error_info_page_gpn {
+        if let Err(e) = vtl2_crash_page::disable(gpn) {
+            tracing::warn!(
+                CVM_ALLOWED,
+                error = &*e as &dyn std::error::Error,
+                "failed to disable VTL2 error page"
+            );
+        }
+    }
     let platform_attestation_data = {
         if !is_restoring && let Some(vmgs) = vmgs.as_mut() {
             // Perform attestation by calling `initialize_platform_security`. This

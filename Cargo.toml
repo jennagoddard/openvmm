@@ -215,6 +215,7 @@ underhill_init = { path = "openhcl/underhill_init" }
 underhill_mem = { path = "openhcl/underhill_mem" }
 underhill_threadpool = { path = "openhcl/underhill_threadpool" }
 virt_mshv_vtl = { path = "openhcl/virt_mshv_vtl" }
+vtl2_crash_page = { path = "openhcl/vtl2_crash_page" }
 
 tmk_core = { path = "tmk/tmk_core" }
 tmk_macros = { path = "tmk/tmk_macros" }

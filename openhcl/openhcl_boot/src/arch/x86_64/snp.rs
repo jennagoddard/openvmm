@@ -516,31 +516,6 @@ impl Ghcb {
             );
         }
     }
-
-    /// Best-effort attempt to make the 4K page containing `page_va` shared for
-    /// crash reporting.
-    ///
-    /// Only clears the C-bit in the PDE and flushes the TLB. Does not call
-    /// `pvalidate` or issue a GHCB PAGE_STATE_CHANGE: per VMWP's legacy
-    /// `ErrorPage` contract the pages backing the error range are host-owned
-    /// (VMWP sets `RetainHostVisibility = 1` and does not inject them via
-    /// `SNP_LAUNCH_UPDATE`), so the RMP already treats them as shared —
-    /// only the guest's own PDE needs to agree. Unlike
-    /// [`Self::change_page_visibility`], this function does not panic on
-    /// failure — it returns false instead.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure that the 2MB region containing `page_va` does
-    /// not overlap with code or stack: clearing the C-bit is done at PDE
-    /// granularity, so every 4K page in the surrounding 2MB region will
-    /// suddenly point at shared memory. Accessing any of those other pages
-    /// after this call faults.
-    pub unsafe fn try_make_page_shared_for_crash(page_va: u64) -> bool {
-        // SAFETY: Caller guarantees the 2MB region is safe to make
-        // non-confidential.
-        unsafe { super::address_space::try_clear_confidential_bit_for_crash(page_va) }
-    }
 }
 
 /// GHCB page-based protocol methods for serial logging support.

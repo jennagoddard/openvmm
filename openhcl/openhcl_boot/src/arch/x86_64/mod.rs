@@ -73,29 +73,25 @@ core::arch::global_asm! {
     STACK_SIZE = const crate::rt::STACK_SIZE,
 }
 
-/// Attempt to write an [`loader_defs::hcl::HclErrorInformationPage`]
-/// describing the panic to the HCL error information page so VMWP's
-/// triple-fault handler can surface the message via `MSVM_HCL_CRASH_REPORT`.
+/// Write an [`loader_defs::hcl::HclErrorInformationPage`] describing the
+/// panic to the HCL error information page so VMWP's triple-fault handler
+/// can surface the message via `MSVM_HCL_CRASH_REPORT`.
 ///
-/// For hardware-isolated (SNP/TDX) VMs the info page's PDE has its
-/// confidential / shared bit fixed up before writing. Per VMWP's legacy
-/// `ErrorPage` contract the underlying pages are already host-owned/shared
-/// (VMWP retains host visibility for the error range and does not inject
-/// those pages via `SNP_LAUNCH_UPDATE` / into the Secure EPT), so no
-/// `pvalidate`, GHCB `PAGE_STATE_CHANGE`, or `MAP_GPA` is required —
-/// only the guest's own page-table view has to agree with the hypervisor.
-/// Because clearing/setting that PDE bit happens at 2 MB granularity, the
-/// info page must live in a different 2 MB region from the currently
-/// executing code and stack. If either shares the info page's PDE this
-/// function bails out.
+/// Per VMWP's legacy `ErrorPage` contract the pages backing the error
+/// range are host-owned/shared for the lifetime of the VM (VMWP retains
+/// host visibility for them and does not inject them via
+/// `SNP_LAUNCH_UPDATE` / into the Secure EPT). The loader also carves the
+/// info page out of the initial page table and marks it
+/// `Confidentiality::Shared`, so on SNP the C-bit is already clear on the
+/// leaf PTE and on TDX the leaf PTE's physical address already has the
+/// shared-GPA-boundary bit set. This function therefore just writes to
+/// `info_page_va` — no runtime page-table manipulation is required.
 ///
-/// Returns `true` on success (the caller should triple-fault). Returns
-/// `false` if the PDE fix-up failed or the page cannot be safely modified;
-/// the caller should fall back to reporting via the guest crash MSRs so
-/// the host learns *something*.
+/// The `_isolation_type` parameter is retained for future use (e.g. TDX
+/// cache-attribute handling) but is currently unused.
 #[cfg_attr(not(minimal_rt), expect(dead_code))]
 pub fn try_write_error_info_page(
-    isolation_type: IsolationType,
+    _isolation_type: IsolationType,
     info_page_va: u64,
     panic: &core::panic::PanicInfo<'_>,
 ) -> bool {
@@ -107,56 +103,11 @@ pub fn try_write_error_info_page(
     use loader_defs::hcl::HclErrorPageData;
     use zerocopy::IntoBytes;
 
-    if isolation_type.is_hardware_isolated() {
-        // Guard against the info page sharing its 2 MB PDE with our code or
-        // stack. If it did, flipping the C-bit / shared bit on the whole PDE
-        // would fault the very code we are running.
-        const LARGE_PAGE_MASK: u64 = !(x86defs::X64_LARGE_PAGE_SIZE - 1);
-        let info_2mb = info_page_va & LARGE_PAGE_MASK;
-
-        let code_addr: u64;
-        // SAFETY: RIP-relative LEA to determine which 2 MB region the
-        // currently executing code is in.
-        unsafe {
-            core::arch::asm!("lea {}, [rip]", out(reg) code_addr, options(nostack, nomem));
-        }
-        if (code_addr & LARGE_PAGE_MASK) == info_2mb {
-            return false;
-        }
-
-        let stack_va: u64;
-        // SAFETY: Reading RSP to determine which 2 MB region the stack is in.
-        unsafe {
-            core::arch::asm!("mov {}, rsp", out(reg) stack_va, options(nostack, nomem));
-        }
-        if (stack_va & LARGE_PAGE_MASK) == info_2mb {
-            return false;
-        }
-
-        let shared = match isolation_type {
-            // SAFETY: We verified the info page is in a different 2 MB PDE
-            // from our code and stack, so modifying the PDE won't affect
-            // execution.
-            IsolationType::Snp => unsafe {
-                snp::Ghcb::try_make_page_shared_for_crash(info_page_va)
-            },
-            IsolationType::Tdx => {
-                let range = memory_range::MemoryRange::new(
-                    info_page_va..info_page_va + hvdef::HV_PAGE_SIZE,
-                );
-                // SAFETY: Same PDE-isolation guarantee as above.
-                unsafe { tdx::try_make_page_shared_for_crash(range) }
-            }
-            _ => return false,
-        };
-
-        if !shared {
-            return false;
-        }
-    }
-
     // Build the error information page on the stack, then copy it into the
-    // (now host-readable) info page.
+    // info page. The leaf PTE was set up by the loader to be host-visible
+    // (SNP: C-bit clear; TDX: shared-GPA-boundary bit set); on
+    // non-hardware-isolated VMs there is no confidentiality metadata to
+    // manage.
     let mut info = HclErrorInformationPage {
         stop_code: 0,
         parameter1: 0,
@@ -193,9 +144,8 @@ pub fn try_write_error_info_page(
     };
     let _ = write!(writer, "{}", panic);
 
-    // SAFETY: info_page_va is identity-mapped, page-aligned, and (for
-    // hardware-isolated VMs) has been shared with the hypervisor above. For
-    // non-hardware-isolated VMs the page is directly writable.
+    // SAFETY: `info_page_va` is identity-mapped, page-aligned, and its
+    // guest paging view was made host-visible by the loader.
     let dest = unsafe {
         core::slice::from_raw_parts_mut(info_page_va as *mut u8, hvdef::HV_PAGE_SIZE as usize)
     };

@@ -397,17 +397,15 @@ where
     // an ErrorRange acceptance so the IGVM file carries an
     // IGVM_VHS_ERROR_RANGE directive that VMWP uses to locate the info page.
     //
-    // WARNING: On hardware-isolated VMs (SNP/TDX) VMWP retains host
-    // visibility for these pages and does not inject them via
-    // `SNP_LAUNCH_UPDATE` / `TDH.MEM.PAGE.ADD`. The panic path in the boot
-    // shim flips the guest's own C-bit / shared-bit on the info page's PDE
-    // to agree, and that flip is done at 2 MB granularity. This region is
-    // followed immediately by the boot-shim heap in the same 2 MB PDE, so
-    // by construction anything in the neighboring 4 KiB pages (heap, log
-    // buffer, etc.) becomes host-visible the moment the PDE bit is flipped.
-    // The crash path is the only code that runs after that flip and it must
-    // not touch those neighboring pages. Do not add code that accesses the
-    // heap or log buffer on the panic path.
+    // On hardware-isolated VMs (SNP/TDX) VMWP retains host visibility for
+    // these pages and does not inject them via `SNP_LAUNCH_UPDATE` /
+    // `TDH.MEM.PAGE.ADD`, so the RMP / Secure EPT already treats them as
+    // shared for the lifetime of the VM. The guest's own paging view is
+    // also made to agree at load time — see the `ranges` construction
+    // below, which carves the error range out of the VTL2 identity map
+    // and marks it `Confidentiality::Shared`. This lets the panic path
+    // just write to the info page without any runtime page-table
+    // manipulation.
     let bootshim_error_range_size = HV_PAGE_SIZE * loader_defs::hcl::HCL_ERROR_RANGE_PAGE_COUNT;
     let bootshim_error_range_start = offset;
     offset += bootshim_error_range_size;
@@ -490,10 +488,53 @@ where
     // Construct the memory ranges that will be identity mapped
     let mut ranges: Vec<MappedRange> = Vec::new();
 
-    ranges.push(MappedRange::new(
-        memory_start_address,
-        memory_start_address + memory_size,
-    ));
+    // On hardware-isolated VMs, carve the error range out of the VTL2
+    // identity map so its pages get their own 4 KiB leaf PTEs with the
+    // guest confidentiality bit flipped to host-visible (SNP C-bit clear;
+    // TDX shared bit set) from the very first page walk. The
+    // `PageTableBuilder` greedily uses the largest aligned mapping that
+    // fits in each range, so the two neighbouring private ranges naturally
+    // decay to 4 KiB PTEs only for the pages that share the 2 MiB PDE(s)
+    // containing the error range; everything else stays at 2 MiB / 1 GiB
+    // granularity. This gives the panic-path write to the info page the
+    // same simple footing as legacy HCL: no runtime confidentiality-bit
+    // flipping, no TLB flush.
+    //
+    // On non-hardware-isolated builds the identity map stays as a single
+    // 2 MiB-granular VTL2 range; `Confidentiality::Shared` is a no-op
+    // there.
+    if matches!(isolation_type, IsolationType::Snp | IsolationType::Tdx) {
+        let vtl2_start = memory_start_address;
+        let vtl2_end = memory_start_address + memory_size;
+        let err_start = bootshim_error_range_start;
+        let err_end = bootshim_error_range_start + bootshim_error_range_size;
+
+        // The error range must be page-aligned and live strictly inside
+        // VTL2. The builder tolerates the range straddling a 2 MiB PDE
+        // boundary — both containing PDEs will degrade to 4 KiB PTEs.
+        assert!(err_start >= vtl2_start);
+        assert!(err_end <= vtl2_end);
+        assert!(err_start.is_multiple_of(HV_PAGE_SIZE));
+        assert!(err_end.is_multiple_of(HV_PAGE_SIZE));
+
+        let mut push_if_nonempty = |start: u64, end: u64, shared: bool| {
+            if start < end {
+                ranges.push(if shared {
+                    MappedRange::shared(start, end)
+                } else {
+                    MappedRange::new(start, end)
+                });
+            }
+        };
+        push_if_nonempty(vtl2_start, err_start, false);
+        push_if_nonempty(err_start, err_end, true);
+        push_if_nonempty(err_end, vtl2_end, false);
+    } else {
+        ranges.push(MappedRange::new(
+            memory_start_address,
+            memory_start_address + memory_size,
+        ));
+    }
 
     if let Some((local_map_start, size)) = local_map {
         ranges.push(MappedRange::new(local_map_start, local_map_start + size));
@@ -522,6 +563,10 @@ where
 
     if isolation_type == IsolationType::Snp {
         page_table_builder = page_table_builder.with_confidential_bit(51);
+    }
+    if isolation_type == IsolationType::Tdx {
+        page_table_builder = page_table_builder
+            .with_shared_gpa_boundary(x86defs::tdx::TDX_SHARED_GPA_BOUNDARY_BITS.into());
     }
 
     let page_table = page_table_builder.build()?;

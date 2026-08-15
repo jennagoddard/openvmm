@@ -155,25 +155,6 @@ pub fn change_page_visibility(range: MemoryRange, host_visible: bool) {
     }
 }
 
-/// Best-effort attempt to make a page range shared for crash reporting.
-///
-/// Only sets the shared bit in the PDE and flushes the TLB. Does not issue a
-/// `MAP_GPA` tdcall: per VMWP's legacy `ErrorPage` contract the pages
-/// backing the error range are host-owned (VMWP sets `RetainHostVisibility =
-/// 1` and does not inject them into the Secure EPT), so the hypervisor
-/// already treats them as shared — only the guest's own PDE needs to agree.
-/// Unlike [`change_page_visibility`], this does not panic on failure — it
-/// returns false instead.
-///
-/// # Safety
-///
-/// The caller must ensure that the 2MB region containing the range does not
-/// overlap with code or stack.
-pub unsafe fn try_make_page_shared_for_crash(range: MemoryRange) -> bool {
-    // SAFETY: Caller guarantees the 2MB region is safe to share.
-    unsafe { super::address_space::try_set_shared_bit_for_crash(range.start()) }
-}
-
 /// Tdcall based io port access.
 #[cfg(feature = "cvm_boot_log")]
 pub struct TdxIoAccess;

@@ -100,6 +100,12 @@ pub struct IgvmLoader<R: VbsRegister + GuestArch> {
     initialization_headers: Vec<IgvmInitializationHeader>,
     directives: Vec<IgvmDirectiveHeader>,
     page_data_directives: Vec<IgvmDirectiveHeader>,
+    /// `IGVM_VHS_ERROR_RANGE` directives, held until the very end of
+    /// [`IgvmLoader::finalize`] so they land after every other directive on
+    /// disk. Matches legacy HCL, which imports the error range as its final
+    /// `ImportGpaPages` call — pushing earlier has been observed to corrupt
+    /// partition topology in some VMWP builds.
+    deferred_error_ranges: Vec<IgvmDirectiveHeader>,
     vp_context: Option<Box<dyn VpContextBuilder<Register = R>>>,
     max_vtl: Vtl,
     parameter_areas: BTreeMap<(u64, u32), u32>,
@@ -533,6 +539,7 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
             initialization_headers,
             directives: Vec::new(),
             page_data_directives: Vec::new(),
+            deferred_error_ranges: Vec::new(),
             vp_context: vp_context_builder,
             max_vtl,
             parameter_areas: BTreeMap::new(),
@@ -661,6 +668,13 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
         // Merge the page_data_directives into the others directives. This must be done before
         // generating the launch measurement.
         self.directives.append(&mut self.page_data_directives);
+
+        // Append deferred `IGVM_VHS_ERROR_RANGE` directives last so they land
+        // after every PageData, VpContext, ParameterArea, and ParameterInsert
+        // directive on disk. See the comment on `deferred_error_ranges`. The
+        // SNP measurement pass explicitly skips ErrorRange entries so this
+        // ordering does not affect the launch digest.
+        self.directives.append(&mut self.deferred_error_ranges);
 
         // Generate the launch measurement for the isolation type being used.
         // The measurement is output for external signing.
@@ -880,17 +894,20 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
                 ), // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
             });
         } else if acceptance == BootPageAcceptance::ErrorPage {
-            // Error ranges are emitted as a single IGVM_VHS_ERROR_RANGE directive
-            // (not per-page PageData). VMWP parses this directive to locate the
-            // error information page and consumes its contents on triple fault.
+            // Error ranges are emitted as a single IGVM_VHS_ERROR_RANGE
+            // directive (not per-page PageData). VMWP parses this directive to
+            // locate the error information page and consumes its contents on
+            // triple fault. See `deferred_error_ranges` for why the push is
+            // held until the end of `finalize()`.
             if !data.is_empty() {
                 anyhow::bail!("error range must not carry any initial data");
             }
-            self.directives.push(IgvmDirectiveHeader::ErrorRange {
-                gpa: page_base * PAGE_SIZE_4K,
-                compatibility_mask: DEFAULT_COMPATIBILITY_MASK,
-                size_bytes: (page_count * PAGE_SIZE_4K) as u32,
-            });
+            self.deferred_error_ranges
+                .push(IgvmDirectiveHeader::ErrorRange {
+                    gpa: page_base * PAGE_SIZE_4K,
+                    compatibility_mask: DEFAULT_COMPATIBILITY_MASK,
+                    size_bytes: (page_count * PAGE_SIZE_4K) as u32,
+                });
         } else {
             for page in page_base..page_base + page_count {
                 let (data_type, flags) = match acceptance {

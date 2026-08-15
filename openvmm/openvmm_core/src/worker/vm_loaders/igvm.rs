@@ -92,6 +92,10 @@ pub enum Error {
     LowerVtlContext,
     #[error("missing required memory range {0}")]
     MissingRequiredMemory(MemoryRange),
+    #[error("IGVM_VHS_ERROR_RANGE gpa {0:#x} is not page aligned")]
+    ErrorRangeUnalignedGpa(u64),
+    #[error("IGVM_VHS_ERROR_RANGE size_bytes {0:#x} is not page aligned")]
+    ErrorRangeUnalignedSize(u32),
 }
 
 fn from_memory_range(range: &MemoryRange) -> IGVM_VHS_MEMORY_RANGE {
@@ -1197,8 +1201,16 @@ fn load_igvm_x86(
                 // Preserve order of import page calls.
                 page_data.flush(&mut loader)?;
 
-                debug_assert!(gpa.is_multiple_of(HV_PAGE_SIZE));
-                debug_assert!((size_bytes as u64).is_multiple_of(HV_PAGE_SIZE));
+                // Validate at the trust boundary: the IGVM parser accepts any
+                // gpa/size and only checks the directive fits in the file, so
+                // an unaligned value must be rejected here before the divide
+                // truncates it.
+                if !gpa.is_multiple_of(HV_PAGE_SIZE) {
+                    return Err(Error::ErrorRangeUnalignedGpa(gpa));
+                }
+                if !(size_bytes as u64).is_multiple_of(HV_PAGE_SIZE) {
+                    return Err(Error::ErrorRangeUnalignedSize(size_bytes));
+                }
 
                 let base_gpa = relocate_gpa(gpa);
                 loader

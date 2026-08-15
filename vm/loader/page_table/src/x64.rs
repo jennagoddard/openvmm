@@ -53,6 +53,27 @@ pub struct PageTableEntry {
     pub(crate) entry: u64,
 }
 
+/// Confidentiality of a [`MappedRange`] on hardware-isolated platforms.
+///
+/// On AMD SEV-SNP the guest's own view of a page is controlled by the C-bit
+/// in the leaf PTE (set = confidential/private, clear = shared/host-visible).
+/// On Intel TDX the equivalent bit is the shared bit at the vTOM position.
+/// On non-hardware-isolated platforms this field has no effect.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum Confidentiality {
+    /// The default. Pages are private to the guest: on SNP the C-bit is set
+    /// in the leaf PTE; on TDX the shared bit is clear.
+    #[default]
+    Private,
+    /// Pages are host-visible / shared. On SNP the C-bit is clear in the
+    /// leaf PTE; on TDX the shared bit is set. Requires the builder to be
+    /// configured via [`PageTableBuilder::with_confidential_bit`] (SNP) or
+    /// [`PageTableBuilder::with_shared_gpa_boundary`] (TDX). On platforms
+    /// where neither is set (VBS, no isolation), `Shared` is a no-op and
+    /// callers relying on host visibility must arrange it another way.
+    Shared,
+}
+
 /// A memory range to be mapped in a page table, and the associated permissions
 /// The default permissions bits are present, R/W, executable
 #[derive(Copy, Clone, Debug)]
@@ -60,15 +81,31 @@ pub struct MappedRange {
     start: u64,
     end: u64,
     permissions: u64,
+    confidentiality: Confidentiality,
 }
 
 impl MappedRange {
-    /// Create a new mapped range, with default permissions
+    /// Create a new mapped range with default (private) confidentiality and
+    /// default permissions.
     pub fn new(start: u64, end: u64) -> Self {
         Self {
             start,
             end,
             permissions: X64_PTE_PRESENT | X64_PTE_ACCESSED | X64_PTE_READ_WRITE,
+            confidentiality: Confidentiality::Private,
+        }
+    }
+
+    /// Create a new shared (host-visible) mapped range. On hardware-isolated
+    /// VMs this emits leaf PTEs with the C-bit clear (SNP) so the guest's
+    /// own paging view agrees with the host's view of these pages. Intended
+    /// for pages that must be host-readable for the lifetime of the VM
+    /// (e.g., the `IGVM_VHT_ERROR_RANGE` error information page). On
+    /// non-hardware-isolated platforms this is equivalent to `new`.
+    pub fn shared(start: u64, end: u64) -> Self {
+        Self {
+            confidentiality: Confidentiality::Shared,
+            ..Self::new(start, end)
         }
     }
 
@@ -311,7 +348,17 @@ pub fn calculate_pde_table_count(start_gpa: u64, size: u64) -> u64 {
 #[derive(Debug, Clone)]
 struct PageTableBuilderInner {
     page_table_gpa: u64,
+    /// SNP C-bit position (typically bit 51). When set, private leaves and
+    /// all directory entries have this bit set; `Shared` leaves have it
+    /// clear. Mutually informative with `shared_gpa_boundary_bit`, which
+    /// covers the equivalent TDX semantics.
     confidential_bit: Option<u32>,
+    /// TDX shared-GPA-boundary bit position (typically bit 47). On TDX,
+    /// shared pages are accessed via a GPA with this bit set; the RMP /
+    /// Secure EPT aliases the two GPAs onto the same host page. When set,
+    /// `Shared` leaves have this bit set in the physical address field;
+    /// private leaves and directory entries do not.
+    shared_gpa_boundary_bit: Option<u32>,
 }
 
 /// A builder for an x64 identity-mapped page table
@@ -329,7 +376,7 @@ pub struct PageTableBuilder<'a> {
 impl PageTableBuilderInner {
     fn get_addr_mask(&self) -> u64 {
         const ALL_ADDR_BITS: u64 = 0x000f_ffff_ffff_f000;
-        ALL_ADDR_BITS & !self.get_confidential_mask()
+        ALL_ADDR_BITS & !self.get_confidential_mask() & !self.get_shared_gpa_boundary_mask()
     }
 
     fn get_confidential_mask(&self) -> u64 {
@@ -340,7 +387,20 @@ impl PageTableBuilderInner {
         }
     }
 
-    fn build_pte(&self, entry_type: PageTableEntryType, permissions: u64) -> PageTableEntry {
+    fn get_shared_gpa_boundary_mask(&self) -> u64 {
+        if let Some(bit) = self.shared_gpa_boundary_bit {
+            1u64 << bit
+        } else {
+            0
+        }
+    }
+
+    fn build_pte(
+        &self,
+        entry_type: PageTableEntryType,
+        permissions: u64,
+        confidentiality: Confidentiality,
+    ) -> PageTableEntry {
         let mut entry: u64 = permissions;
 
         match entry_type {
@@ -369,11 +429,41 @@ impl PageTableBuilderInner {
             }
         }
 
-        let mask = self.get_confidential_mask();
+        // Apply the platform confidentiality bit(s). Directory (`Pde`) entries
+        // always take the platform default (private) — the C-bit on a PDE
+        // describes the underlying page-table page itself, which is
+        // guest-private scaffolding regardless of what the leaves it points to
+        // describe. Only leaves honour the per-range confidentiality.
+        //
+        // On SNP the C-bit (`confidential_bit`) is set for private and clear
+        // for shared. On TDX the shared-GPA-boundary bit
+        // (`shared_gpa_boundary_bit`) is clear for private and set for shared;
+        // there is no C-bit. On non-hardware-isolated platforms both are
+        // `None` and the entry is left as-is.
+        let is_leaf = matches!(
+            entry_type,
+            PageTableEntryType::Leaf1GbPage(_)
+                | PageTableEntryType::Leaf2MbPage(_)
+                | PageTableEntryType::Leaf4kPage(_)
+        );
+        let is_shared_leaf = is_leaf && confidentiality == Confidentiality::Shared;
+
+        let c_mask = self.get_confidential_mask();
         if self.confidential_bit.is_some() {
-            entry |= mask;
-        } else {
-            entry &= !mask;
+            if is_shared_leaf {
+                entry &= !c_mask;
+            } else {
+                entry |= c_mask;
+            }
+        }
+
+        let shared_mask = self.get_shared_gpa_boundary_mask();
+        if self.shared_gpa_boundary_bit.is_some() {
+            if is_shared_leaf {
+                entry |= shared_mask;
+            } else {
+                entry &= !shared_mask;
+            }
         }
 
         PageTableEntry { entry }
@@ -427,6 +517,7 @@ impl<'a> PageTableBuilder<'a> {
                 inner: PageTableBuilderInner {
                     page_table_gpa,
                     confidential_bit: None,
+                    shared_gpa_boundary_bit: None,
                 },
                 page_table,
                 flattened_page_table,
@@ -435,9 +526,20 @@ impl<'a> PageTableBuilder<'a> {
         }
     }
 
-    /// Builds the page tables with the confidential bit set
+    /// Builds the page tables with the SNP C-bit at `bit_position` set for
+    /// private leaves and all directory entries, and clear for `Shared`
+    /// leaves. Mutually exclusive with [`Self::with_shared_gpa_boundary`].
     pub fn with_confidential_bit(mut self, bit_position: u32) -> Self {
         self.inner.confidential_bit = Some(bit_position);
+        self
+    }
+
+    /// Builds the page tables with the TDX shared-GPA-boundary bit at
+    /// `bit_position` set in the leaf physical address for `Shared` leaves.
+    /// Private leaves and directory entries keep the bit clear. Mutually
+    /// exclusive with [`Self::with_confidential_bit`].
+    pub fn with_shared_gpa_boundary(mut self, bit_position: u32) -> Self {
+        self.inner.shared_gpa_boundary_bit = Some(bit_position);
         self
     }
 
@@ -456,7 +558,11 @@ impl<'a> PageTableBuilder<'a> {
         let (mut page_table_index, pml4_table_index) = (0, 0);
 
         // Allocate and link table
-        let mut link_tables = |start_va: u64, end_va: u64, permissions: u64| -> Result<(), Error> {
+        let mut link_tables = |start_va: u64,
+                               end_va: u64,
+                               permissions: u64,
+                               confidentiality: Confidentiality|
+         -> Result<(), Error> {
             let mut current_va = start_va;
             let mut get_or_insert_entry = |table_index: usize,
                                            entry_level: EntryLevel,
@@ -479,7 +585,11 @@ impl<'a> PageTableBuilder<'a> {
                         entry_level
                     );
 
-                    let new_entry = inner.build_pte(entry_level.leaf(*current_va), permissions);
+                    let new_entry = inner.build_pte(
+                        entry_level.leaf(*current_va),
+                        permissions,
+                        confidentiality,
+                    );
                     *entry = new_entry;
                     *current_va += entry_level.mapping_size();
 
@@ -507,10 +617,14 @@ impl<'a> PageTableBuilder<'a> {
                         // Create the directory entry. Directory entries can be shared amongst
                         // MappedRanges with different sets of permissions, so give a wide set of
                         // permissions in the directory, and apply the MappedRange permissions in
-                        // the leaf entry
+                        // the leaf entry. Directory entries always take the platform default
+                        // (private) confidentiality: the C-bit on a `Pde` describes the underlying
+                        // page-table page, which is guest-private scaffolding, and does not
+                        // dictate the confidentiality of the leaves it eventually points to.
                         let new_entry = inner.build_pte(
                             PageTableEntryType::Pde(output_address),
                             X64_PTE_PRESENT | X64_PTE_ACCESSED | X64_PTE_READ_WRITE,
+                            Confidentiality::Private,
                         );
 
                         #[cfg(feature = "tracing")]
@@ -557,7 +671,12 @@ impl<'a> PageTableBuilder<'a> {
         };
 
         for range in ranges {
-            link_tables(range.start, range.end, range.permissions)?;
+            link_tables(
+                range.start,
+                range.end,
+                range.permissions,
+                range.confidentiality,
+            )?;
         }
 
         // flatten the [page_table] into a [u8]

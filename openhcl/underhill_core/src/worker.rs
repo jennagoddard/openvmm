@@ -2321,8 +2321,8 @@ async fn new_underhill_vm(
                 persistent_allocations: false,
             })?,
             notify_reference_time_bias: matches!(isolation, virt::IsolationType::Tdx).then(|| {
-                let get_client = get_client.clone();
-                Arc::new(move |bias| get_client.set_vm_reference_time_bias(bias))
+                let get_client: GuestEmulationTransportClient = get_client.clone();
+                Arc::new(move |bias| block_on(get_client.set_vm_reference_time_bias(bias)))
                     as Arc<dyn Fn(u64) + Send + Sync>
             }),
         })

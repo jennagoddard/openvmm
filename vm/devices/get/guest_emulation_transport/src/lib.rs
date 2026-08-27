@@ -131,6 +131,7 @@ mod tests {
     use test_with_tracing::test;
     use vmbus_async::async_dgram::AsyncRecvExt;
     use vmbus_async::async_dgram::AsyncSendExt;
+    use zerocopy::FromBytes;
     use zerocopy::FromZeros;
     use zerocopy::IntoBytes;
 
@@ -169,6 +170,52 @@ mod tests {
         match transport.unwrap_err() {
             FatalError::VersionNegotiationFailed => {}
             e => panic!("Wrong error type returned: {}", e),
+        }
+
+        host_task.await;
+    }
+
+    #[async_test]
+    async fn test_set_vm_reference_time_bias(driver: DefaultDriver) {
+        let (mut host_vmbus, guest_vmbus) =
+            vmbus_async::pipe::connected_message_pipes(get_protocol::MAX_MESSAGE_SIZE);
+
+        let host_task = driver.spawn("host task", async move {
+            let mut version_request = get_protocol::VersionRequest::new_zeroed();
+            host_vmbus
+                .recv_exact(version_request.as_mut_bytes())
+                .await
+                .unwrap();
+            assert_eq!(version_request.version, ProtocolVersion::NICKEL_REV2);
+            host_vmbus
+                .send(get_protocol::VersionResponse::new(true).as_bytes())
+                .await
+                .unwrap();
+
+            for expected_bias in [1234, 0, 5678] {
+                let mut message = [0; size_of::<
+                    get_protocol::SetVmReferenceTimeBiasNotification,
+                >()];
+                host_vmbus.recv_exact(&mut message).await.unwrap();
+                let notification =
+                    get_protocol::SetVmReferenceTimeBiasNotification::read_from_bytes(&message)
+                        .unwrap();
+                assert_eq!(
+                    notification.message_header.message_id(),
+                    get_protocol::HostNotifications::SET_VM_REFERENCE_TIME_BIAS
+                );
+                assert_eq!(notification.vm_reference_time_bias, expected_bias);
+            }
+        });
+
+        let (transport, _guest_task) =
+            GuestEmulationTransportWorker::with_pipe(&driver, guest_vmbus)
+                .await
+                .unwrap();
+        let client = transport.new_client();
+
+        for bias in [1234, 0, 5678] {
+            client.set_vm_reference_time_bias(bias).await;
         }
 
         host_task.await;

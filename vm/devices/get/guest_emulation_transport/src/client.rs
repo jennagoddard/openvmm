@@ -800,10 +800,11 @@ impl GuestEmulationTransportClient {
     }
 
     /// Notifies the host of the VM reference time bias, in 100ns units.
-    pub fn set_vm_reference_time_bias(&self, vm_reference_time_bias: u64) {
+    pub async fn set_vm_reference_time_bias(&self, vm_reference_time_bias: u64) {
         self.control.notify(msg::Msg::SetVmReferenceTimeBias(
             get_protocol::SetVmReferenceTimeBiasNotification::new(vm_reference_time_bias).into(),
         ));
+        self.control.call(msg::Msg::FlushWrites, ()).await;
     }
 
     /// Take the save request receiver, which allows the VM to respond to

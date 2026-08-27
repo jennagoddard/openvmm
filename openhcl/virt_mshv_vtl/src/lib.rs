@@ -639,16 +639,23 @@ impl TscReferenceTimeSource {
         ((self.tsc_scale as u128 * tsc as u128) >> 64) as u64
     }
 
-    fn restore(&self, reference_time_in_100_ns: u64, tsc: u64) {
-        let bias = reference_time_in_100_ns.wrapping_sub(self.scaled_tsc(tsc));
+    fn restore_at(&self, previous_reference_time: u64, current_tsc: u64) -> u64 {
+        let bias = previous_reference_time.wrapping_sub(self.scaled_tsc(current_tsc));
         self.bias.store(bias, Ordering::Relaxed);
-        self.notify_bias(bias);
+        bias
+    }
+
+    fn restore(&self, previous_reference_time: u64) -> u64 {
+        #[cfg(guest_arch = "x86_64")]
+        {
+            self.restore_at(previous_reference_time, safe_intrinsics::rdtsc())
+        }
+
+        #[cfg(guest_arch = "aarch64")]
+        unreachable!("RestorePartitionTime is only available on x86_64");
     }
 
     fn notify_bias(&self, bias: u64) {
-        if bias == 0 {
-            return;
-        }
         if let Some(notify_bias) = &self.notify_bias {
             notify_bias(bias);
         }
@@ -2768,24 +2775,24 @@ mod tests {
             let notifications = notifications.clone();
             Arc::new(move |bias| notifications.lock().push(bias)) as Arc<dyn Fn(u64) + Send + Sync>
         };
-        let time_source = TscReferenceTimeSource::new(2_000_000_000, Some(notify_bias));
+        let time_source = TscReferenceTimeSource::new(20_000_000, Some(notify_bias));
         assert!(notifications.lock().is_empty());
 
-        time_source.restore(0, 0);
-        assert!(notifications.lock().is_empty());
+        let negative_bias = time_source.restore_at(100, 300);
+        assert_eq!(negative_bias as i64, -50);
+        time_source.notify_bias(negative_bias);
 
-        let tsc = 10_000;
-        let reference_time = 123_456_u64;
-        let bias = reference_time.wrapping_sub(time_source.scaled_tsc(tsc));
-        time_source.restore(reference_time, tsc);
+        assert_eq!(time_source.restore_at(100, 200), 0);
+        time_source.notify_bias(0);
 
-        let wrapping_reference_time = 1_u64;
-        let wrapping_tsc = u64::MAX;
-        let wrapping_bias =
-            wrapping_reference_time.wrapping_sub(time_source.scaled_tsc(wrapping_tsc));
-        time_source.restore(wrapping_reference_time, wrapping_tsc);
+        let positive_bias = time_source.restore_at(125, 200);
+        assert_eq!(positive_bias, 25);
+        time_source.notify_bias(positive_bias);
 
-        assert_eq!(time_source.bias.load(Ordering::Relaxed), wrapping_bias);
-        assert_eq!(*notifications.lock(), vec![bias, wrapping_bias]);
+        assert_eq!(time_source.bias.load(Ordering::Relaxed), positive_bias);
+        assert_eq!(
+            *notifications.lock(),
+            vec![negative_bias, 0, positive_bias]
+        );
     }
 }

@@ -153,7 +153,15 @@ impl<T: RingMem + Unpin> TestGedChannel<T> {
                     HostNotifications::RESET => {
                         state.power_client.power_request(PowerRequest::Reset);
                     }
-                    HostNotifications::SET_VM_REFERENCE_TIME_BIAS => {}
+                    HostNotifications::SET_VM_REFERENCE_TIME_BIAS => {
+                        let notification =
+                            get_protocol::SetVmReferenceTimeBiasNotification::read_from_prefix(
+                                &message_buf[..bytes_read],
+                            )
+                            .unwrap()
+                            .0;
+                        state.vm_reference_time_bias = notification.vm_reference_time_bias;
+                    }
                     _ => todo!("add when more tests are added"),
                 }
             }

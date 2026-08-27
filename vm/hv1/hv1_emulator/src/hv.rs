@@ -10,6 +10,7 @@ use crate::pages::LockedPage;
 use crate::pages::OverlayPage;
 #[cfg(guest_arch = "aarch64")]
 use aarch64defs::Vendor;
+use guestmem::Page;
 use hv1_structs::VtlArray;
 use hvdef::HV_REFERENCE_TSC_SEQUENCE_INVALID;
 use hvdef::HvError;
@@ -23,13 +24,14 @@ use parking_lot::Mutex;
 use safeatomic::AtomicSliceOps;
 use std::mem::offset_of;
 use std::sync::Arc;
+use std::sync::atomic::AtomicI64;
+use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
 use virt::x86::MsrError;
 use vm_topology::processor::VpIndex;
 use vmcore::reference_time::ReferenceTimeSource;
 #[cfg(guest_arch = "x86_64")]
 use x86defs::cpuid::Vendor;
-use zerocopy::FromZeros;
 
 /// The partition-wide hypervisor state.
 #[derive(Inspect)]
@@ -49,6 +51,7 @@ struct GlobalHvState {
     ref_time: ReferenceTimeSource,
     tsc_frequency: u64,
     is_ref_time_backed_by_tsc: bool,
+    reference_tsc_offset: AtomicI64,
 }
 
 #[derive(Inspect)]
@@ -119,6 +122,7 @@ impl<const VTL_COUNT: usize> GlobalHv<VTL_COUNT> {
                 tsc_frequency: params.tsc_frequency,
                 is_ref_time_backed_by_tsc: params.is_ref_time_backed_by_tsc,
                 ref_time: params.ref_time,
+                reference_tsc_offset: AtomicI64::new(0),
             }),
             vtl_mutable_state: VtlArray::from_fn(|_| Arc::new(Mutex::new(MutableHvState::new()))),
             synic: VtlArray::from_fn(|_| GlobalSynic::new(params.max_vp_count)),
@@ -153,6 +157,27 @@ impl<const VTL_COUNT: usize> GlobalHv<VTL_COUNT> {
     /// Returns the reference time source.
     pub fn ref_time_source(&self) -> &ReferenceTimeSource {
         &self.partition_state.ref_time
+    }
+
+    /// Updates the additive offset in every mapped reference-TSC page.
+    pub fn update_reference_tsc_offset(&self, offset: i64) {
+        self.partition_state
+            .reference_tsc_offset
+            .store(offset, Ordering::Relaxed);
+
+        for state in self.vtl_mutable_state.iter() {
+            let mut state = state.lock();
+            let MutableHvState {
+                reference_tsc_page,
+                tsc_sequence,
+                ..
+            } = &mut *state;
+            if let Some(page) = reference_tsc_page.page() {
+                invalidate_reference_tsc_page(page);
+                write_reference_tsc_offset(page, offset);
+                publish_reference_tsc_page(page, tsc_sequence);
+            }
+        }
     }
 }
 
@@ -281,22 +306,20 @@ impl ProcessorVtlHv {
             let new_page = reference_tsc_page
                 .remap(v.gpn(), prot_access, false)
                 .map_err(|_| MsrError::InvalidAccess)?;
-            new_page[..4].atomic_write_obj(&HV_REFERENCE_TSC_SEQUENCE_INVALID);
+            invalidate_reference_tsc_page(new_page);
 
             if self.partition_state.is_ref_time_backed_by_tsc {
-                // TDX TODO: offset might need to be included
                 let tsc_scale =
                     (((10_000_000_u128) << 64) / self.partition_state.tsc_frequency as u128) as u64;
-                *tsc_sequence = tsc_sequence.wrapping_add(1);
-                if *tsc_sequence == HV_REFERENCE_TSC_SEQUENCE_INVALID {
-                    *tsc_sequence = tsc_sequence.wrapping_add(1);
-                }
-                let reference_page = hvdef::HvReferenceTscPage {
-                    tsc_sequence: *tsc_sequence,
-                    tsc_scale,
-                    ..FromZeros::new_zeroed()
-                };
-                new_page.atomic_write_obj(&reference_page);
+                new_page.atomic_fill(0);
+                write_reference_tsc_scale(new_page, tsc_scale);
+                write_reference_tsc_offset(
+                    new_page,
+                    self.partition_state
+                        .reference_tsc_offset
+                        .load(Ordering::Relaxed),
+                );
+                publish_reference_tsc_page(new_page, tsc_sequence);
             }
         } else if !v.enable() {
             mutable.reference_tsc_page.unmap(prot_access);
@@ -457,6 +480,34 @@ impl ProcessorVtlHv {
     }
 }
 
+fn invalidate_reference_tsc_page(page: &Page) {
+    page[..size_of::<u32>()]
+        .as_atomic::<AtomicU32>()
+        .unwrap()
+        .store(HV_REFERENCE_TSC_SEQUENCE_INVALID, Ordering::Release);
+}
+
+fn write_reference_tsc_scale(page: &Page, scale: u64) {
+    let offset = offset_of!(hvdef::HvReferenceTscPage, tsc_scale);
+    page[offset..offset + size_of::<u64>()].atomic_write_obj(&scale);
+}
+
+fn write_reference_tsc_offset(page: &Page, value: i64) {
+    let offset = offset_of!(hvdef::HvReferenceTscPage, tsc_offset);
+    page[offset..offset + size_of::<i64>()].atomic_write_obj(&value);
+}
+
+fn publish_reference_tsc_page(page: &Page, sequence: &mut u32) {
+    *sequence = sequence.wrapping_add(1);
+    if *sequence == HV_REFERENCE_TSC_SEQUENCE_INVALID {
+        *sequence = sequence.wrapping_add(1);
+    }
+    page[..size_of::<u32>()]
+        .as_atomic::<AtomicU32>()
+        .unwrap()
+        .store(*sequence, Ordering::Release);
+}
+
 struct HypercallPage {
     page: [u8; 50],
     offsets32: hvdef::HvRegisterVsmCodePageOffsets,
@@ -522,6 +573,10 @@ struct ReadOnlyLockedPageInner {
 }
 
 impl ReadOnlyLockedPage {
+    fn page(&self) -> Option<&LockedPage> {
+        self.0.as_ref().map(|inner| &inner.page)
+    }
+
     pub fn remap(
         &mut self,
         gpn: u64,
@@ -554,5 +609,45 @@ impl ReadOnlyLockedPage {
         if let Some(ReadOnlyLockedPageInner { page }) = self.0.take() {
             prot_access.unlock_overlay_page(page.gpn).unwrap();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicU8;
+
+    fn reference_time(page: &Page, tsc: u64) -> u64 {
+        let page: hvdef::HvReferenceTscPage = page.atomic_read_obj();
+        ((page.tsc_scale as u128 * tsc as u128) >> 64)
+            .wrapping_add(page.tsc_offset as u128) as u64
+    }
+
+    #[test]
+    fn reference_tsc_page_tracks_offset_updates() {
+        let page = Box::new(std::array::from_fn::<_, { hvdef::HV_PAGE_SIZE_USIZE }, _>(
+            |_| AtomicU8::new(0),
+        ));
+        let mut sequence = 0;
+        let scale = 1_u64 << 63;
+
+        invalidate_reference_tsc_page(&page);
+        write_reference_tsc_scale(&page, scale);
+        write_reference_tsc_offset(&page, -3);
+        publish_reference_tsc_page(&page, &mut sequence);
+
+        let first: hvdef::HvReferenceTscPage = page.atomic_read_obj();
+        assert_eq!(first.tsc_sequence, 1);
+        assert_eq!(first.tsc_offset, -3);
+        assert_eq!(reference_time(&page, 20), 7);
+
+        invalidate_reference_tsc_page(&page);
+        write_reference_tsc_offset(&page, 5);
+        publish_reference_tsc_page(&page, &mut sequence);
+
+        let second: hvdef::HvReferenceTscPage = page.atomic_read_obj();
+        assert_eq!(second.tsc_sequence, 2);
+        assert_eq!(second.tsc_offset, 5);
+        assert_eq!(reference_time(&page, 20), 15);
     }
 }

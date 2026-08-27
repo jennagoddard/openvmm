@@ -78,6 +78,7 @@ use virt::Processor;
 use virt::StopVp;
 use virt::VpHaltReason;
 use virt::VpIndex;
+use vmcore::reference_time::GetReferenceTime;
 use virt::io::CpuIo;
 use vm_topology::processor::TargetVpInfo;
 use vmcore::vmtime::VmTimeAccess;
@@ -1400,6 +1401,9 @@ impl<B: Backing> hv1_hypercall::RestorePartitionTime for UhHypercallHandler<'_, 
             return Err(HvError::InvalidParameter);
         }
 
+        let cvm_state = self.vp.partition.backing_shared.cvm_state();
+        let previous_reference_time = cvm_state.map(|state| state.reference_time.now().ref_time);
+
         if let Err(e) = self.vp.partition.hcl.restore_partition_time(
             tsc_sequence,
             reference_time_in_100_ns,
@@ -1411,10 +1415,12 @@ impl<B: Backing> hv1_hypercall::RestorePartitionTime for UhHypercallHandler<'_, 
             );
             return Err(HvError::InvalidParameter);
         }
-        if let Some(cvm_state) = self.vp.partition.backing_shared.cvm_state() {
-            cvm_state
-                .reference_time
-                .restore(reference_time_in_100_ns, tsc);
+        if let (Some(cvm_state), Some(previous_reference_time)) =
+            (cvm_state, previous_reference_time)
+        {
+            let bias = cvm_state.reference_time.restore(previous_reference_time);
+            cvm_state.hv.update_reference_tsc_offset(bias as i64);
+            cvm_state.reference_time.notify_bias(bias);
         }
         Ok(())
     }

@@ -231,6 +231,7 @@ pub struct GuestEmulationDevice {
     #[inspect(with = "Option::is_some")]
     save_restore_buf: Option<Vec<u8>>,
     last_save_restore_buf_len: usize,
+    vm_reference_time_bias: u64,
 
     igvm_agent_setting: Option<IgvmAgentTestSetting>,
 
@@ -274,6 +275,7 @@ impl GuestEmulationDevice {
             save_restore_buf: None,
             waiting_for_vtl0_start: Vec::new(),
             last_save_restore_buf_len: 0,
+            vm_reference_time_bias: 0,
             igvm_agent_setting,
             igvm_agent: TestIgvmAgent::new("openvmm"),
             test_gsp_by_id,
@@ -1116,7 +1118,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                 self.handle_modify_vtl2_settings_completed(message_buf)?;
             }
             HostNotifications::SET_VM_REFERENCE_TIME_BIAS => {
-                self.handle_set_vm_reference_time_bias(message_buf)?;
+                self.handle_set_vm_reference_time_bias(state, message_buf)?;
             }
             _ => {
                 return Err(Error::InvalidFieldValue);
@@ -1287,13 +1289,18 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         Ok(())
     }
 
-    fn handle_set_vm_reference_time_bias(&mut self, message_buf: &[u8]) -> Result<(), Error> {
+    fn handle_set_vm_reference_time_bias(
+        &mut self,
+        state: &mut GuestEmulationDevice,
+        message_buf: &[u8],
+    ) -> Result<(), Error> {
         let notification =
             get_protocol::SetVmReferenceTimeBiasNotification::read_from_prefix(message_buf)
                 .map_err(|_| Error::MessageTooSmall)?
                 .0;
+        state.vm_reference_time_bias = notification.vm_reference_time_bias;
         tracing::debug!(
-            vm_reference_time_bias = notification.vm_reference_time_bias,
+            vm_reference_time_bias = state.vm_reference_time_bias,
             "received VM reference time bias"
         );
         Ok(())

@@ -804,7 +804,9 @@ impl GuestEmulationTransportClient {
         self.control.notify(msg::Msg::SetVmReferenceTimeBias(
             get_protocol::SetVmReferenceTimeBiasNotification::new(vm_reference_time_bias).into(),
         ));
-        self.control.call(msg::Msg::FlushWrites, ()).await;
+        // The notification has no response of its own. A request/response on
+        // the same ordered pipe ensures GED has consumed it before returning.
+        let _ = self.control.call(msg::Msg::HostTime, ()).await;
     }
 
     /// Take the save request receiver, which allows the VM to respond to

@@ -193,9 +193,8 @@ mod tests {
                 .unwrap();
 
             for expected_bias in [1234, 0, 5678] {
-                let mut message = [0; size_of::<
-                    get_protocol::SetVmReferenceTimeBiasNotification,
-                >()];
+                let mut message =
+                    [0; size_of::<get_protocol::SetVmReferenceTimeBiasNotification>()];
                 host_vmbus.recv_exact(&mut message).await.unwrap();
                 let notification =
                     get_protocol::SetVmReferenceTimeBiasNotification::read_from_bytes(&message)
@@ -205,6 +204,20 @@ mod tests {
                     get_protocol::HostNotifications::SET_VM_REFERENCE_TIME_BIAS
                 );
                 assert_eq!(notification.vm_reference_time_bias, expected_bias);
+
+                let mut time_request = get_protocol::TimeRequest::new_zeroed();
+                host_vmbus
+                    .recv_exact(time_request.as_mut_bytes())
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    time_request.message_header.message_id(),
+                    get_protocol::HostRequests::TIME
+                );
+                host_vmbus
+                    .send(get_protocol::TimeResponse::new(0, 0, 0, false).as_bytes())
+                    .await
+                    .unwrap();
             }
         });
 

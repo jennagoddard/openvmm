@@ -640,7 +640,7 @@ impl TscReferenceTimeSource {
     }
 
     fn restore_at(&self, previous_reference_time: u64, current_tsc: u64) -> u64 {
-        let bias = previous_reference_time.wrapping_sub(self.scaled_tsc(current_tsc));
+        let bias = reference_time_bias(previous_reference_time, self.scaled_tsc(current_tsc));
         self.bias.store(bias, Ordering::Relaxed);
         bias
     }
@@ -660,6 +660,10 @@ impl TscReferenceTimeSource {
             notify_bias(bias);
         }
     }
+}
+
+fn reference_time_bias(previous_reference_time: u64, current_reference_time: u64) -> u64 {
+    previous_reference_time.wrapping_sub(current_reference_time)
 }
 
 /// A time implementation based on TSC.
@@ -2780,7 +2784,9 @@ mod tests {
 
         let negative_bias = time_source.restore_at(100, 300);
         assert_eq!(negative_bias as i64, -50);
-        time_source.notify_bias(negative_bias);
+        let host_bias = reference_time_bias(100, 75);
+        assert_eq!(host_bias, 25);
+        time_source.notify_bias(host_bias);
 
         assert_eq!(time_source.restore_at(100, 200), 0);
         time_source.notify_bias(0);
@@ -2790,9 +2796,6 @@ mod tests {
         time_source.notify_bias(positive_bias);
 
         assert_eq!(time_source.bias.load(Ordering::Relaxed), positive_bias);
-        assert_eq!(
-            *notifications.lock(),
-            vec![negative_bias, 0, positive_bias]
-        );
+        assert_eq!(*notifications.lock(), vec![host_bias, 0, positive_bias]);
     }
 }

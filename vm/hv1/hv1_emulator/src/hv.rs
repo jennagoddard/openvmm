@@ -26,7 +26,9 @@ use std::mem::offset_of;
 use std::sync::Arc;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::AtomicU32;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use std::sync::atomic::fence;
 use virt::x86::MsrError;
 use vm_topology::processor::VpIndex;
 use vmcore::reference_time::ReferenceTimeSource;
@@ -108,8 +110,8 @@ pub struct GlobalHvParams<const VTL_COUNT: usize> {
     pub tsc_frequency: u64,
     /// The reference time system to use.
     pub ref_time: ReferenceTimeSource,
-    /// If true, the reference time is backed by the TSC, with an implicit
-    /// offset of zero.
+    /// If true, the reference time is backed by the TSC. The offset starts at
+    /// zero and can be updated via [`GlobalHv::update_reference_tsc_offset`].
     pub is_ref_time_backed_by_tsc: bool,
 }
 
@@ -485,16 +487,23 @@ fn invalidate_reference_tsc_page(page: &Page) {
         .as_atomic::<AtomicU32>()
         .unwrap()
         .store(HV_REFERENCE_TSC_SEQUENCE_INVALID, Ordering::Release);
+    fence(Ordering::SeqCst);
 }
 
 fn write_reference_tsc_scale(page: &Page, scale: u64) {
     let offset = offset_of!(hvdef::HvReferenceTscPage, tsc_scale);
-    page[offset..offset + size_of::<u64>()].atomic_write_obj(&scale);
+    page[offset..offset + size_of::<u64>()]
+        .as_atomic::<AtomicU64>()
+        .unwrap()
+        .store(scale, Ordering::Relaxed);
 }
 
 fn write_reference_tsc_offset(page: &Page, value: i64) {
     let offset = offset_of!(hvdef::HvReferenceTscPage, tsc_offset);
-    page[offset..offset + size_of::<i64>()].atomic_write_obj(&value);
+    page[offset..offset + size_of::<i64>()]
+        .as_atomic::<AtomicI64>()
+        .unwrap()
+        .store(value, Ordering::Relaxed);
 }
 
 fn publish_reference_tsc_page(page: &Page, sequence: &mut u32) {
@@ -619,8 +628,7 @@ mod tests {
 
     fn reference_time(page: &Page, tsc: u64) -> u64 {
         let page: hvdef::HvReferenceTscPage = page.atomic_read_obj();
-        ((page.tsc_scale as u128 * tsc as u128) >> 64)
-            .wrapping_add(page.tsc_offset as u128) as u64
+        ((page.tsc_scale as u128 * tsc as u128) >> 64).wrapping_add(page.tsc_offset as u128) as u64
     }
 
     #[test]

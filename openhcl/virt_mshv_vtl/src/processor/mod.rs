@@ -41,6 +41,7 @@ cfg_if::cfg_if! {
 use super::Error;
 use super::UhPartitionInner;
 use super::UhVpInner;
+use super::reference_time_bias;
 use crate::ExitActivity;
 use crate::GuestVtl;
 use crate::TlbFlushLockAccess;
@@ -78,9 +79,9 @@ use virt::Processor;
 use virt::StopVp;
 use virt::VpHaltReason;
 use virt::VpIndex;
-use vmcore::reference_time::GetReferenceTime;
 use virt::io::CpuIo;
 use vm_topology::processor::TargetVpInfo;
+use vmcore::reference_time::GetReferenceTime;
 use vmcore::vmtime::VmTimeAccess;
 
 /// An object to run lower VTLs and to access processor state.
@@ -1418,9 +1419,21 @@ impl<B: Backing> hv1_hypercall::RestorePartitionTime for UhHypercallHandler<'_, 
         if let (Some(cvm_state), Some(previous_reference_time)) =
             (cvm_state, previous_reference_time)
         {
-            let bias = cvm_state.reference_time.restore(previous_reference_time);
-            cvm_state.hv.update_reference_tsc_offset(bias as i64);
-            cvm_state.reference_time.notify_bias(bias);
+            let hypervisor_reference_time = self.vp.partition.hcl.reference_time();
+            let local_bias = cvm_state.reference_time.restore(previous_reference_time);
+            cvm_state.hv.update_reference_tsc_offset(local_bias as i64);
+            let hypervisor_reference_time = match hypervisor_reference_time {
+                Ok(reference_time) => reference_time,
+                Err(e) => {
+                    tracelimit::error_ratelimited!(
+                        error = &e as &dyn std::error::Error,
+                        "failed to query post-restore hypervisor reference time"
+                    );
+                    return Err(HvError::InvalidParameter);
+                }
+            };
+            let host_bias = reference_time_bias(previous_reference_time, hypervisor_reference_time);
+            cvm_state.reference_time.notify_bias(host_bias);
         }
         Ok(())
     }

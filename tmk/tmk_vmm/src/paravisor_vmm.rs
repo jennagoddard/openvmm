@@ -59,6 +59,7 @@ impl RunContext<'_> {
                 isolated_memory_protector: cvm_memory.protector.clone(),
                 shared_dma_client: Arc::new(user_driver::lockmem::LockedMemorySpawner),
                 private_dma_client: self.state.cca_private_dma_client(),
+                notify_reference_time_bias: None,
             })
         } else {
             None

@@ -153,6 +153,7 @@ impl<T: RingMem + Unpin> TestGedChannel<T> {
                     HostNotifications::RESET => {
                         state.power_client.power_request(PowerRequest::Reset);
                     }
+                    HostNotifications::SET_VM_REFERENCE_TIME_BIAS => {}
                     _ => todo!("add when more tests are added"),
                 }
             }

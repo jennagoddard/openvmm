@@ -496,6 +496,9 @@ struct UhCvmPartitionState {
     lapic: VtlArray<LocalApicSet, 2>,
     /// The emulated hypervisor state.
     hv: GlobalHv<2>,
+    /// The reference time source used by the emulated hypervisor.
+    #[inspect(skip)]
+    reference_time: Arc<TscReferenceTimeSource>,
     /// Guest VSM state.
     guest_vsm: RwLock<GuestVsmState<CvmVtl1State>>,
     /// Whether the partition has the access vsm privilege.
@@ -619,12 +622,35 @@ impl CvmVtl1State {
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
 struct TscReferenceTimeSource {
     tsc_scale: u64,
+    bias: AtomicU64,
+    notify_bias: Option<Arc<dyn Fn(u64) + Send + Sync>>,
 }
 
 impl TscReferenceTimeSource {
-    fn new(tsc_frequency: u64) -> Self {
+    fn new(tsc_frequency: u64, notify_bias: Option<Arc<dyn Fn(u64) + Send + Sync>>) -> Self {
         TscReferenceTimeSource {
             tsc_scale: (((10_000_000_u128) << 64) / tsc_frequency as u128) as u64,
+            bias: AtomicU64::new(0),
+            notify_bias,
+        }
+    }
+
+    fn scaled_tsc(&self, tsc: u64) -> u64 {
+        ((self.tsc_scale as u128 * tsc as u128) >> 64) as u64
+    }
+
+    fn restore(&self, reference_time_in_100_ns: u64, tsc: u64) {
+        let bias = reference_time_in_100_ns.wrapping_sub(self.scaled_tsc(tsc));
+        self.bias.store(bias, Ordering::Relaxed);
+        self.notify_bias(bias);
+    }
+
+    fn notify_bias(&self, bias: u64) {
+        if bias == 0 {
+            return;
+        }
+        if let Some(notify_bias) = &self.notify_bias {
+            notify_bias(bias);
         }
     }
 }
@@ -635,7 +661,9 @@ impl GetReferenceTime for TscReferenceTimeSource {
         #[cfg(guest_arch = "x86_64")]
         {
             let tsc = safe_intrinsics::rdtsc();
-            let ref_time = ((self.tsc_scale as u128 * tsc as u128) >> 64) as u64;
+            let ref_time = self
+                .scaled_tsc(tsc)
+                .wrapping_add(self.bias.load(Ordering::Relaxed));
             ReferenceTimeResult {
                 ref_time,
                 system_time: None,
@@ -1545,6 +1573,8 @@ pub struct CvmLateParams {
     pub shared_dma_client: Arc<dyn DmaClient>,
     /// Allocator for private visibility pages.
     pub private_dma_client: Arc<dyn DmaClient>,
+    /// Callback invoked when the VM reference time bias is known or changes.
+    pub notify_reference_time_bias: Option<Arc<dyn Fn(u64) + Send + Sync>>,
 }
 
 /// Represents a GPN that is either in guest memory or was allocated by dma_client.
@@ -2360,7 +2390,12 @@ impl UhProtoPartition<'_> {
         });
 
         let tsc_frequency = get_tsc_frequency(params.isolation)?;
-        let ref_time = ReferenceTimeSource::new(TscReferenceTimeSource::new(tsc_frequency));
+        let reference_time = Arc::new(TscReferenceTimeSource::new(
+            tsc_frequency,
+            late_params.notify_reference_time_bias,
+        ));
+        let ref_time =
+            ReferenceTimeSource::from(reference_time.clone() as Arc<dyn GetReferenceTime>);
 
         // If we're emulating the APIC, then we also must emulate the hypervisor
         // enlightenments, since the hypervisor can't support enlightenments
@@ -2386,6 +2421,7 @@ impl UhProtoPartition<'_> {
             #[cfg(guest_arch = "x86_64")]
             lapic,
             hv,
+            reference_time,
             guest_vsm: RwLock::new(GuestVsmState::from_availability(guest_vsm_available)),
             access_vsm_privilege: guest_vsm_available,
             shared_dma_client: late_params.shared_dma_client,
@@ -2719,4 +2755,37 @@ fn validate_vtl_gpa_flags(
     }
 
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tsc_reference_time_source_reports_bias_changes() {
+        let notifications = Arc::new(Mutex::new(Vec::new()));
+        let notify_bias = {
+            let notifications = notifications.clone();
+            Arc::new(move |bias| notifications.lock().push(bias)) as Arc<dyn Fn(u64) + Send + Sync>
+        };
+        let time_source = TscReferenceTimeSource::new(2_000_000_000, Some(notify_bias));
+        assert!(notifications.lock().is_empty());
+
+        time_source.restore(0, 0);
+        assert!(notifications.lock().is_empty());
+
+        let tsc = 10_000;
+        let reference_time = 123_456_u64;
+        let bias = reference_time.wrapping_sub(time_source.scaled_tsc(tsc));
+        time_source.restore(reference_time, tsc);
+
+        let wrapping_reference_time = 1_u64;
+        let wrapping_tsc = u64::MAX;
+        let wrapping_bias =
+            wrapping_reference_time.wrapping_sub(time_source.scaled_tsc(wrapping_tsc));
+        time_source.restore(wrapping_reference_time, wrapping_tsc);
+
+        assert_eq!(time_source.bias.load(Ordering::Relaxed), wrapping_bias);
+        assert_eq!(*notifications.lock(), vec![bias, wrapping_bias]);
+    }
 }

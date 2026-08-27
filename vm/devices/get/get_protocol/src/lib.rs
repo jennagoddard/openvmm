@@ -117,6 +117,9 @@ open_enum! {
         START_VTL0_COMPLETED               = 7,
         VTL_CRASH                          = 8,
         TRIPLE_FAULT                       = 9,
+        REGISTER_STATS_PAGE                = 10,
+        PROCESS_EFI_DIAGNOSTICS             = 11,
+        SET_VM_REFERENCE_TIME_BIAS         = 12,
     }
 }
 
@@ -495,6 +498,30 @@ impl TripleFaultNotification {
             vp_index,
             fault_type,
             register_count,
+        }
+    }
+}
+
+/// VM reference time bias notification to send to the host.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
+pub struct SetVmReferenceTimeBiasNotification {
+    pub message_header: HeaderHostNotification,
+    reserved0: u32,
+    pub vm_reference_time_bias: u64,
+}
+const_assert_eq!(16, size_of::<SetVmReferenceTimeBiasNotification>());
+const_assert_eq!(
+    8,
+    std::mem::offset_of!(SetVmReferenceTimeBiasNotification, vm_reference_time_bias)
+);
+
+impl SetVmReferenceTimeBiasNotification {
+    pub fn new(vm_reference_time_bias: u64) -> Self {
+        Self {
+            message_header: HeaderGeneric::new(HostNotifications::SET_VM_REFERENCE_TIME_BIAS),
+            reserved0: 0,
+            vm_reference_time_bias,
         }
     }
 }
@@ -1961,4 +1988,21 @@ pub mod test_utilities {
     // These constants are shared across GED and GET testing
     pub const TEST_VMGS_SECTOR_SIZE: u32 = 512;
     pub const TEST_VMGS_CAPACITY: usize = 4194816; // 4 MB
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn set_vm_reference_time_bias_notification_wire_format() {
+        let notification = SetVmReferenceTimeBiasNotification::new(0x0123_4567_89ab_cdef);
+
+        assert_eq!(
+            notification.as_bytes(),
+            &[
+                1, 1, 12, 0, 0, 0, 0, 0, 0xef, 0xcd, 0xab, 0x89, 0x67, 0x45, 0x23, 0x01,
+            ]
+        );
+    }
 }

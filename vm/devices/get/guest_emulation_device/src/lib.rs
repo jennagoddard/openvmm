@@ -1115,6 +1115,9 @@ impl<T: RingMem + Unpin> GedChannel<T> {
             HostNotifications::MODIFY_VTL2_SETTINGS_COMPLETED => {
                 self.handle_modify_vtl2_settings_completed(message_buf)?;
             }
+            HostNotifications::SET_VM_REFERENCE_TIME_BIAS => {
+                self.handle_set_vm_reference_time_bias(message_buf)?;
+            }
             _ => {
                 return Err(Error::InvalidFieldValue);
             }
@@ -1281,6 +1284,18 @@ impl<T: RingMem + Unpin> GedChannel<T> {
             _ => return Err(Error::InvalidFieldValue),
         };
         modify.complete(r);
+        Ok(())
+    }
+
+    fn handle_set_vm_reference_time_bias(&mut self, message_buf: &[u8]) -> Result<(), Error> {
+        let notification =
+            get_protocol::SetVmReferenceTimeBiasNotification::read_from_prefix(message_buf)
+                .map_err(|_| Error::MessageTooSmall)?
+                .0;
+        tracing::debug!(
+            vm_reference_time_bias = notification.vm_reference_time_bias,
+            "received VM reference time bias"
+        );
         Ok(())
     }
 

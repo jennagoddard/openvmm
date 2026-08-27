@@ -1411,6 +1411,11 @@ impl<B: Backing> hv1_hypercall::RestorePartitionTime for UhHypercallHandler<'_, 
             );
             return Err(HvError::InvalidParameter);
         }
+        if let Some(cvm_state) = self.vp.partition.backing_shared.cvm_state() {
+            cvm_state
+                .reference_time
+                .restore(reference_time_in_100_ns, tsc);
+        }
         Ok(())
     }
 }

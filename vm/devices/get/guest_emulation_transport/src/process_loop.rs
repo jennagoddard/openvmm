@@ -351,6 +351,8 @@ pub(crate) mod msg {
         PowerState(PowerState),
         /// Report the result of a restore operation to the host.
         ReportRestoreResultToHost(bool),
+        /// Report the VM reference time bias to the host.
+        SetVmReferenceTimeBias(Protocol<get_protocol::SetVmReferenceTimeBiasNotification>),
         /// Report a VP triple fault to the host.
         TripleFaultNotification(Vec<u8>),
         /// Report a guest crash to the host.
@@ -1297,6 +1299,9 @@ impl<T: RingMem> ProcessLoop<T> {
                 );
             }
             Msg::ReportRestoreResultToHost(success) => self.report_restore_result_to_host(success),
+            Msg::SetVmReferenceTimeBias(notification) => {
+                self.send_message(notification.0.as_bytes().to_vec());
+            }
             Msg::VtlCrashNotification(crash_notification) => {
                 // Send the crash notification right away, jumping the line in front of
                 // any pending requests.

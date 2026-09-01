@@ -113,10 +113,6 @@ impl SimpleFlowNode for Node {
             )
         }
 
-        if disable_secure_avic && (release_cfg || release) {
-            anyhow::bail!("--disable-secure-avic cannot be used with release builds.");
-        }
-
         let build_profile = if release {
             OpenvmmHclBuildProfile::OpenvmmHclShip
         } else {

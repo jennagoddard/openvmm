@@ -236,6 +236,36 @@ impl SimpleFlowNode for Node {
                 openhcl_igvm_extras,
             });
 
+            let output_recipe = recipe.clone();
+            let igvm = igvm.map(ctx, move |output| match output {
+                OpenhclIgvmOutput::LocalOnlyCustom {
+                    igvm_bin,
+                    endorsements,
+                } => match output_recipe {
+                    OpenhclIgvmRecipe::X64 => OpenhclIgvmOutput::X64 { igvm_bin },
+                    OpenhclIgvmRecipe::X64Devkern => OpenhclIgvmOutput::X64Devkern { igvm_bin },
+                    OpenhclIgvmRecipe::X64TestLinuxDirect => {
+                        OpenhclIgvmOutput::X64TestLinuxDirect { igvm_bin }
+                    }
+                    OpenhclIgvmRecipe::X64TestLinuxDirectDevkern => {
+                        OpenhclIgvmOutput::X64TestLinuxDirectDevkern { igvm_bin }
+                    }
+                    OpenhclIgvmRecipe::X64Cvm => OpenhclIgvmOutput::X64Cvm {
+                        igvm_bin,
+                        endorsements,
+                    },
+                    OpenhclIgvmRecipe::X64CvmDevkern => OpenhclIgvmOutput::X64CvmDevkern {
+                        igvm_bin,
+                        endorsements,
+                    },
+                    OpenhclIgvmRecipe::Aarch64 => OpenhclIgvmOutput::Aarch64 { igvm_bin },
+                    OpenhclIgvmRecipe::Aarch64Devkern => {
+                        OpenhclIgvmOutput::Aarch64Devkern { igvm_bin }
+                    }
+                },
+                output => output,
+            });
+
             if copy_extras {
                 let dir = openhcl_extras_dir.join(recipe.non_production_tag());
                 copy_to_dir.extend_from_slice(&[

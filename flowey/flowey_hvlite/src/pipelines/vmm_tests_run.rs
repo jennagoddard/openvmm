@@ -721,7 +721,7 @@ fn selections_from_resolved(
     let ResolvedArtifactSelections {
         target,
         build,
-        prebuilt_artifacts,
+        mut prebuilt_artifacts,
         prep_steps_variants,
         downloads,
         force_downloads: _,
@@ -731,6 +731,9 @@ fn selections_from_resolved(
         needs_virtio_win_drivers,
         needs_release_igvm,
     } = resolved;
+    if !prep_steps_variants.is_empty() {
+        prebuilt_artifacts.uefi_x64 = true;
+    }
     let needs_whp = build
         .openvmm_for(ArtifactTarget::Triple(target))
         .expect("no native openvmm");
